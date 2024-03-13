@@ -1,0 +1,11 @@
+torch
+torchvision
+torchmetrics>=1.2.1
+wandb
+gin-config
+numba
+einops
+tensorboard==2.15.1
+timm==0.9.12
+submitit==1.5.1
+ffcv@git+https://github.com/erow/ffcv.git
