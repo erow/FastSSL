@@ -1,0 +1,16 @@
+# Parameters for build_dataset:
+# ==============================================================================
+build_dataset.transform_fn = @MultiviewPipeline
+
+# Parameters for build_model:
+# ==============================================================================
+build_model.model_fn = @SimCLR
+
+# Parameters for SimCLR:
+# ==============================================================================
+
+
+# Parameters for MultiviewPipeline:
+# ==============================================================================
+MultiviewPipeline.img_size = 224
+MultiviewPipeline.local_crops_number = 0

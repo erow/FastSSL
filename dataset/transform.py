@@ -20,15 +20,24 @@ from torch import nn
 import torch.distributed as dist
 from PIL import ImageFilter, ImageOps
 from torchvision import transforms
+from torchvision.transforms.v2 import Normalize, RandomResizedCrop, RandomHorizontalFlip, ColorJitter, ToTensor, RandomApply, RandomGrayscale, Compose, ToDtype
 import gin
 from PIL import Image
 
 from typing import List
 
-IMAGENET_MEAN = np.array([0.485, 0.456, 0.406]) * 255
-IMAGENET_STD = np.array([0.229, 0.224, 0.225]) * 255
+IMAGENET_MEAN = np.array([0.485, 0.456, 0.406])
+IMAGENET_STD = np.array([0.229, 0.224, 0.225])
 DEFAULT_CROP_RATIO = 224/256
 
+class ToDevice(nn.Module):
+    def __init__(self, device):
+        super().__init__()
+        self.device = device
+
+    def forward(self, x:torch.Tensor):
+        return x.to(self.device,non_blocking=True)
+    
 class GaussianBlur(nn.Module):
     """
     Apply Gaussian Blur to the PIL image.
@@ -67,16 +76,17 @@ class SimpleAugmentation(nn.Module):
     def __init__(self,img_size=224,scale=(0.2, 1.0),):
         super().__init__()
          # simple augmentation
-        self.transforms = transforms.Compose([
-                transforms.RandomResizedCrop(img_size, scale=scale, interpolation=Image.BICUBIC),  # 3 is bicubic
-                transforms.RandomHorizontalFlip(),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
+        self.transforms = Compose([
+                RandomResizedCrop(img_size, scale=scale, interpolation=Image.BICUBIC),  # 3 is bicubic
+                RandomHorizontalFlip(),
+                ToTensor(),
+                # ToDevice('cuda'),
+                Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
     def forward(self,x):
         return self.transforms(x)
     
     def change_resolution(self,img_size):
-        decoder = self.transforms.transforms[0]
+        decoder = self.transforms[0]
         decoder.size=(img_size,img_size)
 
     
@@ -95,32 +105,33 @@ class DataAugmentationDINO(nn.Module):
         """
         super().__init__()
         if color_jitter:
-            flip_and_color_jitter = transforms.Compose([
-                transforms.RandomHorizontalFlip(p=0.5),
-                transforms.RandomApply(
-                    [transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1)],
+            flip_and_color_jitter = Compose([
+                RandomHorizontalFlip(p=0.5),
+                RandomApply(
+                    [ColorJitter(brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1)],
                     p=0.8
                 ),
-                transforms.RandomGrayscale(p=0.2),
+                RandomGrayscale(p=0.2),
             ])
         else:
-            flip_and_color_jitter = transforms.Compose([])
+            flip_and_color_jitter = Compose([])
 
-        normalize = transforms.Compose([
-            transforms.ToTensor(),
-            # transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+        normalize = Compose([
+            ToTensor(),
+            # ToDevice('cuda'),
+            Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
         ])
 
         # first global crop
-        self.global_transfo1 = transforms.Compose([
-            transforms.RandomResizedCrop(img_size, scale=global_crops_scale, interpolation=Image.BICUBIC),
+        self.global_transfo1 = Compose([
+            RandomResizedCrop(img_size, scale=global_crops_scale, interpolation=Image.BICUBIC),
             flip_and_color_jitter,
             GaussianBlur(1.0),
             normalize,
         ])
         # second global crop
-        self.global_transfo2 = transforms.Compose([
-            transforms.RandomResizedCrop(img_size, scale=global_crops_scale, interpolation=Image.BICUBIC),
+        self.global_transfo2 = Compose([
+            RandomResizedCrop(img_size, scale=global_crops_scale, interpolation=Image.BICUBIC),
             flip_and_color_jitter,
             GaussianBlur(0.1),
             Solarization(0.2),
@@ -128,8 +139,8 @@ class DataAugmentationDINO(nn.Module):
         ])
         # transformation for the local small crops
         self.local_crops_number = local_crops_number
-        self.local_transfo = transforms.Compose([
-            transforms.RandomResizedCrop(96, scale=local_crops_scale, interpolation=Image.BICUBIC),
+        self.local_transfo = Compose([
+            RandomResizedCrop(96, scale=local_crops_scale, interpolation=Image.BICUBIC),
             flip_and_color_jitter,
             GaussianBlur(p=0.5),
             normalize,

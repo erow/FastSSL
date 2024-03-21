@@ -32,10 +32,12 @@ import util.misc as misc
 from util.misc import NativeScalerWithGradNormCount as NativeScaler, load_pretrained_weights
 import util.lr_sched as lr_sched
 
+from model import simclr
 from model.build_model import build_model
 from dataset.build_dataset import build_dataset
 from model.dres import DynamicMasking
 from dataset import ffcv_transform 
+
 
 from typing import Iterable
 
@@ -124,9 +126,9 @@ def train_one_epoch(model: torch.nn.Module,online_prob,
         print('log_dir: {}'.format(log_writer.log_dir))
 
     for data_iter_step, data in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
-        if args.data_set != "ffcv":
-            samples, targets = data
-            
+        if args.data_set == "ffcv":
+            samples = data[:-1]
+            targets = data[-1]            
         else:
             samples, targets = data
         
@@ -160,7 +162,8 @@ def train_one_epoch(model: torch.nn.Module,online_prob,
                 model.update()
                 
             if online_prob:
-                acc = online_prob.train_one_step(samples, targets.flatten())
+                with torch.cuda.amp.autocast():
+                    acc = online_prob.train_one_step(samples, targets.flatten())
                 metric_logger.update(acc=acc)
 
         torch.cuda.synchronize()

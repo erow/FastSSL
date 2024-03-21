@@ -29,7 +29,7 @@ from ffcv.pipeline.compiler import Compiler
 from ffcv.pipeline.state import State
 
 import torch
-from torchvision.transforms.v2 import Normalize, RandomGrayscale, GaussianBlur
+from torchvision.transforms.v2 import Normalize
 
 IMAGENET_MEAN = np.array([0.485, 0.456, 0.406]) * 255
 IMAGENET_STD = np.array([0.229, 0.224, 0.225]) * 255
@@ -173,6 +173,154 @@ class RandomSolarization(Operation):
     ) -> Tuple[State, Optional[AllocationQuery]]:
         return (replace(previous_state, jit_mode=True), None)
 
+
+class RandomGrayscale(Operation):
+    """Add Gaussian Blur with probability blur_prob.
+    Operates on raw arrays (not tensors).
+
+    Parameters
+    ----------
+    blur_prob : float
+        The probability with which to flip each image in the batch
+        horizontally.
+    """
+
+    def __init__(self, gray_prob: float = 0.2, seed: int = None):
+        super().__init__()
+        self.gray_prob = gray_prob
+        self.seed = seed
+
+    def generate_code(self) -> Callable:
+        my_range = Compiler.get_iterator()
+        gray_prob = self.gray_prob
+        seed = self.seed
+
+        if seed is None:
+
+            def grayscale(images, _):
+                for i in my_range(images.shape[0]):
+                    if np.random.rand() > gray_prob:
+                        continue
+                    images[i] = (
+                        0.2989 * images[i, ..., 0:1]
+                        + 0.5870 * images[i, ..., 1:2]
+                        + 0.1140 * images[i, ..., 2:3]
+                    )
+                return images
+
+            grayscale.is_parallel = True
+            return grayscale
+
+        def grayscale(images, _, counter):
+            random.seed(seed + counter)
+            values = np.zeros(images.shape[0])
+            for i in range(images.shape[0]):
+                values[i] = random.uniform(0, 1)
+            for i in my_range(images.shape[0]):
+                if values[i] > gray_prob:
+                    continue
+                images[i] = (
+                    0.2989 * images[i, ..., 0:1]
+                    + 0.5870 * images[i, ..., 1:2]
+                    + 0.1140 * images[i, ..., 2:3]
+                )
+            return images
+
+        grayscale.with_counter = True
+        grayscale.is_parallel = True
+        return grayscale
+
+    def declare_state_and_memory(
+        self, previous_state: State
+    ) -> Tuple[State, Optional[AllocationQuery]]:
+        assert previous_state.jit_mode
+        return (previous_state, None)
+
+from scipy.signal import convolve2d
+
+
+def apply_blur(img, kernel_size, w):
+    pad = (kernel_size - 1) // 2
+    H, W, _ = img.shape
+    tmp = np.zeros(img.shape, dtype=np.float32)
+    for k in range(kernel_size):
+        start = max(0, pad - k)
+        stop = min(W, pad - k + W)
+        window = (img[:, start:stop] / 255) * w[k]
+        tmp[:, np.abs(stop - W) : W - start] += window
+    tmp2 = tmp + 0.0
+    for k in range(kernel_size):
+        start = max(0, pad - k)
+        stop = min(H, pad - k + H)
+        window = (tmp[start:stop] * w[k]).astype(np.uint8)
+        tmp2[np.abs(stop - H) : H - start] += window
+    return np.clip(tmp2 * 255.0, 0, 255).astype(np.uint8)
+
+
+class GaussianBlur(Operation):
+    """Blurs image with randomly chosen Gaussian blur.
+    If the image is torch Tensor, it is expected
+    to have [..., C, H, W] shape, where ... means an arbitrary number of leading dimensions.
+
+    Args:
+        blur_prob (float): probability to apply blurring to each input
+        kernel_size (int or sequence): Size of the Gaussian kernel.
+        sigma (float or tuple of float (min, max)): Standard deviation to be used for
+            creating kernel to perform blurring. If float, sigma is fixed. If it is tuple
+            of float (min, max), sigma is chosen uniformly at random to lie in the
+            given range.
+    """
+
+    def __init__(self, blur_prob, kernel_size=5, sigma=(0.1, 2.0), seed=None):
+        super().__init__()
+        self.blur_prob = blur_prob
+        self.kernel_size = kernel_size
+        assert sigma[1] > sigma[0]
+        self.sigmas = np.linspace(sigma[0], sigma[1], 10)
+        from scipy import signal
+
+        self.weights = np.stack(
+            [
+                signal.gaussian(kernel_size, s)
+                for s in np.linspace(sigma[0], sigma[1], 10)
+            ]
+        )
+        self.weights /= self.weights.sum(1, keepdims=True)
+        self.seed = seed
+
+    def generate_code(self) -> Callable:
+        my_range = Compiler.get_iterator()
+        blur_prob = self.blur_prob
+        kernel_size = self.kernel_size
+        weights = self.weights
+        seed = self.seed
+        apply_blur_c = Compiler.compile(apply_blur)
+
+        def blur(images, _, indices):
+
+            for i in my_range(images.shape[0]):
+                if np.random.rand() < blur_prob:
+                    k = np.random.randint(low=0, high=10)
+                    for ch in range(images.shape[-1]):
+                        images[i, ..., ch] = convolve2d(
+                            images[i, ..., ch],
+                            np.outer(weights[k], weights[k]),
+                            mode="same",
+                        )
+                    # images[i] = apply_blur_c(images[i], kernel_size, weights[k])
+            return images
+
+        blur.is_parallel = True
+        blur.with_indices = True
+        return blur
+
+    def declare_state_and_memory(
+        self, previous_state: State
+    ) -> Tuple[State, Optional[AllocationQuery]]:
+        return (
+            replace(previous_state, jit_mode=False),
+            None,
+        )
 
 class RandomColorJitter(Operation):
     """Add ColorJitter with probability jitter_prob.
@@ -336,19 +484,21 @@ def MultiviewPipeline(img_size=224,scale=(0.4, 1.0),local_crops_number=8,
         RandomHorizontalFlip(),
         RandomColorJitter(0.8, 0.4, 0.4, 0.2, 0.1),
         RandomGrayscale(1),
-        NormalizeImage(mean,std,np.float16),
+        GaussianBlur(1, sigma=(0.1, 2)),
         ToTensor(), ToTorchImage(),
+        Convert(torch.float32),
         ToDevice(torch.device('cuda'),non_blocking=True),
-        GaussianBlur(kernel_size=(5, 9), sigma=(0.1, 2))
+        Normalize(mean,std),
     ]
     image_pipeline2 = [
         RandomHorizontalFlip(),
         RandomColorJitter(0.8, 0.4, 0.4, 0.2, 0.1),
         RandomGrayscale(0.2),
         RandomSolarization(0.2, 128),
-        NormalizeImage(mean,std,np.float16),
         ToTensor(), ToTorchImage(),
+        Convert(torch.float32),
         ToDevice(torch.device('cuda'),non_blocking=True),
+        Normalize(mean,std),
     ]
     def _local_pipeline():
         return [
