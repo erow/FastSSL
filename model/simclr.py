@@ -49,27 +49,14 @@ def build_mlp(num_layers, input_dim, mlp_dim, output_dim, last_bn=True):
 
     return nn.Sequential(*mlp)
 
-
+import timm
 @gin.configurable
 class SimCLR(nn.Module):
-    def __init__(self, bachbone='resnet18', out_dim=2048,mlp_dim=512, temperature=0.5):
+    def __init__(self, backbone='resnet18', out_dim=2048,mlp_dim=512, temperature=0.5):
         super(SimCLR, self).__init__()
         self.temperature = temperature
-        if bachbone == 'resnet18':
-            bachbone = resnet18(pretrained=False)
-        elif bachbone == 'resnet34':
-            bachbone = resnet34(pretrained=False)
-        elif bachbone == 'resnet50':
-            bachbone = resnet50(pretrained=False)
-        elif bachbone == 'resnet101':
-            bachbone = resnet101(pretrained=False)
-        elif bachbone == 'resnet152':
-            bachbone = resnet152(pretrained=False)
-        else:
-            raise ValueError('bachbone not supported')
-        self.backbone =bachbone
+        self.backbone = timm.create_model(backbone,pretrained=False,num_classes=out_dim)
         self.embed_dim = out_dim
-        self.backbone.fc = nn.Linear(self.backbone.fc.in_features, out_dim)
         self.projector = build_mlp(2, out_dim, mlp_dim, out_dim)
 
     def representation(self, x):
@@ -78,14 +65,12 @@ class SimCLR(nn.Module):
         x = self.backbone(x)
         return x
 
-    def forward(self, imgs, **kwargs):
-        assert isinstance(imgs, list) or isinstance(imgs, tuple)
-        x1, x2 = imgs[:2]
-        cxs = imgs[2:]
-        
+    def forward(self, samples, **kwargs):
+        x1,x2 = samples[:2]
+        local_x = samples[2:]
         z1 = self.projector(self.representation(x1))
         z2 = self.projector(self.representation(x2))
         
         loss = contrastive_loss(z1,z2) + contrastive_loss(z2,z1)
-        return loss
+        return loss, {}
         

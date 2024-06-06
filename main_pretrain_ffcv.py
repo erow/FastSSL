@@ -12,6 +12,7 @@ from PIL import Image # a trick to solve loading lib problem
 import argparse
 import datetime
 import json
+from ffcv import Loader
 import numpy as np
 import os
 import time
@@ -25,6 +26,9 @@ import torch.backends.cudnn as cudnn
 from torch.utils.tensorboard import SummaryWriter
 
 import timm
+
+from dataset.multiloader import MultiLoader
+from model.prob import OnlineProb
 assert timm.__version__ >= "0.6.12"  # version check
 import timm.optim.optim_factory as optim_factory
 
@@ -32,10 +36,12 @@ import util.misc as misc
 from util.misc import NativeScalerWithGradNormCount as NativeScaler, load_pretrained_weights
 import util.lr_sched as lr_sched
 
+
 from model.build_model import build_model
 from model.dres import DynamicMasking
-from dataset import transform 
-import torchvision
+from dataset import ffcv_transform 
+
+from ffcv.loader import OrderOption
 
 from typing import Iterable
 
@@ -71,7 +77,7 @@ def get_args_parser():
                         help='epochs to warmup LR')
 
     # Dataset parameters
-    parser.add_argument('--data_set', default='IMNET', choices=['PZ1', 'IMNET', 'PZ2', 'ffcv'])
+    parser.add_argument('--data_set', default='ffcv', choices=['PZ1', 'IMNET', 'PZ2', 'ffcv'])
     parser.add_argument("--multiview", default=False, action="store_true", help="Apply multiview augmentation.")
     parser.add_argument('--data_path', default='/datasets01/imagenet_full_size/061417/', type=str,
                         help='dataset path')
@@ -125,7 +131,13 @@ def train_one_epoch(model: torch.nn.Module,online_prob,
         print('log_dir: {}'.format(log_writer.log_dir))
 
     for data_iter_step, data in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
-        samples, targets = data
+
+        # we use a per iteration (instead of per epoch) lr scheduler
+        if data_iter_step % accum_iter == 0:
+            lr_sched.adjust_learning_rate(optimizer, data_iter_step / len(data_loader) + epoch, args)
+        
+        samples = data[:-1]
+        targets = data[-1]        
         
         if isinstance(samples,list) or isinstance(samples,tuple):
             samples = [i.to(device, non_blocking=True) for i in samples]
@@ -133,16 +145,12 @@ def train_one_epoch(model: torch.nn.Module,online_prob,
             samples = samples.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
             
-        # we use a per iteration (instead of per epoch) lr scheduler
-        if data_iter_step % accum_iter == 0:
-            lr_sched.adjust_learning_rate(optimizer, data_iter_step / len(data_loader) + epoch, args)
-        
 
         with torch.cuda.amp.autocast():
             if args.multiview:
                 loss,log = model(samples,targets=targets, epoch=epoch)
             else:
-                loss,log = model(samples,targets=targets, epoch=epoch)
+                loss,log = model(samples[0],targets=targets, epoch=epoch)
 
         loss_value = loss.item()
 
@@ -189,6 +197,8 @@ def train_one_epoch(model: torch.nn.Module,online_prob,
     print("Averaged stats:", metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
+
+
 def main(args):
     misc.init_distributed_mode(args)
 
@@ -206,26 +216,20 @@ def main(args):
 
     cudnn.benchmark = True
 
-    if args.multiview:
-        transform_train = transform.DataAugmentationDINO()
-    else:
-        transform_train = transform.SimpleAugmentation()
-    dataset_train = torchvision.datasets.ImageFolder(os.path.join(args.data_path, 'train'), transform=transform_train)
     
+    order = OrderOption.RANDOM if args.distributed else OrderOption.QUASI_RANDOM
+    if args.multiview:
+        data_loader_train =  MultiLoader(args.data_path, pipelines=ffcv_transform.MultiviewPipeline(),
+                            batch_size=args.batch_size, num_workers=args.num_workers,
+                            batches_ahead=4, 
+                            order=order, distributed=args.distributed,seed=args.seed)
+    else:
+        data_loader_train = Loader(args.data_path, pipelines=ffcv_transform.SimplePipeline(),
+                            batch_size=args.batch_size, num_workers=args.num_workers,
+                            batches_ahead=4, 
+                            order=order, distributed=args.distributed,seed=args.seed)
     num_tasks = misc.get_world_size()
     global_rank = misc.get_rank()
-
-    sampler_train = torch.utils.data.DistributedSampler(
-        dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=True
-    )
-    print("Sampler_train = %s" % str(sampler_train))
-    data_loader_train = torch.utils.data.DataLoader(
-        dataset_train, sampler=sampler_train,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        pin_memory=args.pin_mem,
-        drop_last=True,
-    )
     
     if args.dynamic_resolution:
         import torch._dynamo
@@ -297,10 +301,8 @@ def main(args):
     if online_prob:
         online_prob.classifer.to(device)
     for epoch in range(args.start_epoch, args.epochs):
-        if args.distributed and args.data_set != "ffcv":
-            data_loader_train.sampler.set_epoch(epoch)
         if dres:
-            dres(model_without_ddp, data_loader_train,epoch,is_ffcv=args.data_set == "ffcv")
+            dres(model_without_ddp, data_loader_train,epoch,is_ffcv=True)
                 
         train_stats = train_one_epoch(
             model, online_prob,data_loader_train,

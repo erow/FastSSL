@@ -181,8 +181,7 @@ def setup_for_distributed(is_master):
         force = force or (get_world_size() > 8)
         if is_master or force:
             now = datetime.datetime.now().time()
-            builtin_print('[{}] '.format(now), end='')  # print with time stamp
-            builtin_print(*args, **kwargs)
+            builtin_print('[{}] '.format(now), *args, **kwargs)  # print with time stamp
 
     builtins.print = print
 

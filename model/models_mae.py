@@ -260,7 +260,7 @@ class MaskedAutoencoderViT(nn.Module):
         pred = self.forward_decoder(latent, ids_restore,decoder_pos_embed)  # [N, L, p*p*3]
         
         loss = self.target_loss(imgs, pred, mask)
-        return loss
+        return loss,{}
 
 def mae_tiny(**kwargs):
     model = MaskedAutoencoderViT(
