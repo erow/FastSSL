@@ -134,8 +134,7 @@ def main():
         slurm_signal_delay_s=120,
         **kwargs
     )
-    evaluation = args.module.split(".")[-1]
-    executor.update_parameters(name=evaluation)
+    executor.update_parameters(name="pretrain")
     args.dist_url = get_init_file(args.job_dir).as_uri()
     
     trainer = Trainer(args, module_params)

@@ -509,6 +509,7 @@ def MultiviewPipeline(img_size=224,scale=(0.4, 1.0),local_crops_number=8,
             ToTensor(), ToTorchImage(),        
             # GaussianBlur(0.1), Solarization(0.2),
             ToDevice(torch.device('cuda'),non_blocking=True),
+            Normalize(mean,std),
         ]
     label_pipeline = [IntDecoder(), ToTensor(),View(-1)]
     # Pipeline for each data field

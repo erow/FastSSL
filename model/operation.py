@@ -5,6 +5,95 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
+from torch.distributed import group, ReduceOp
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from torch import Tensor
+import gin
+
+# utils
+@torch.no_grad()
+def concat_all_gather(tensor):
+    """
+    Performs all_gather operation on the provided tensors.
+    *** Warning ***: torch.distributed.all_gather has no gradient.
+    """
+    tensors_gather = [torch.ones_like(tensor)
+        for _ in range(torch.distributed.get_world_size())]
+    torch.distributed.all_gather(tensors_gather, tensor, async_op=False)
+
+    output = torch.cat(tensors_gather, dim=0)
+    return output
+
+def contrastive_loss(q, k,temperature=0.1):
+    # normalize
+    q = nn.functional.normalize(q, dim=1)
+    k = nn.functional.normalize(k, dim=1)
+    # gather all targets
+    k = concat_all_gather(k)
+    # Einstein sum is more intuitive
+    logits = torch.einsum('nc,mc->nm', [q, k]) / temperature
+    N = logits.shape[0]  # batch size per GPU
+    labels = (torch.arange(N, dtype=torch.long) + N * torch.distributed.get_rank()).cuda()
+    return nn.CrossEntropyLoss()(logits, labels) * (2 * temperature)
+
+
+class AllGatherGrad(torch.autograd.Function):
+    @staticmethod
+    def forward(
+        ctx: Any,
+        tensor: Tensor,
+        group: Optional["torch.distributed.ProcessGroup"] = group.WORLD,
+    ) -> Tensor:
+        ctx.group = group
+
+        gathered_tensor = [torch.zeros_like(tensor) for _ in range(torch.distributed.get_world_size())]
+
+        dist.all_gather(gathered_tensor, tensor, group=group)
+        gathered_tensor = torch.stack(gathered_tensor, dim=0)
+
+        return gathered_tensor
+
+    @staticmethod
+    def backward(ctx: Any, *grad_output: Tensor) -> Tuple[Tensor, None]:
+        # print("backward------------->")
+        # print(grad_output)
+        grad_output = torch.cat(grad_output)
+
+        torch.distributed.all_reduce(grad_output, op=torch.distributed.ReduceOp.SUM, async_op=False, group=ctx.group)
+
+        return grad_output[torch.distributed.get_rank()], None  
+
+def concat_all_gather_grad(tensor):
+    """
+    Performs all_gather operation on the provided tensors.
+    *** Warning ***: torch.distributed.all_gather has no gradient.
+    """
+    if dist.get_world_size() == 1:
+        return tensor
+    return AllGatherGrad.apply(tensor).flatten(0,1)
+    
+@gin.configurable
+def build_mlp(num_layers, input_dim, mlp_dim, output_dim, last_bn=True):
+    mlp = []
+    for l in range(num_layers):
+        dim1 = input_dim if l == 0 else mlp_dim
+        dim2 = output_dim if l == num_layers - 1 else mlp_dim
+
+        if l == num_layers-1:
+            mlp.append(nn.Linear(dim1, dim2, bias=False))
+        else:
+            mlp.append(nn.Linear(dim1, dim2, bias=True))
+
+        if l < num_layers - 1:
+            mlp.append(nn.BatchNorm1d(dim2))
+            mlp.append(nn.ReLU(inplace=True))
+        elif last_bn:
+            # follow SimCLR's design: https://github.com/google-research/simclr/blob/master/model_util.py#L157
+            # for simplicity, we further removed gamma in BN
+            mlp.append(nn.BatchNorm1d(dim2, affine=False))
+
+    return nn.Sequential(*mlp)
+
 
 def patchify(imgs,p=16):
     """

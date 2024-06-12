@@ -1,6 +1,6 @@
 # Parameters for build_dataset:
 # ==============================================================================
-build_dataset.transform_fn = @SimplePipeline
+# build_dataset.transform_fn = @SimplePipeline
 
 # Parameters for build_model:
 # ==============================================================================

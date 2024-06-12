@@ -29,6 +29,7 @@ import timm
 
 from dataset.multiloader import MultiLoader
 from model.prob import OnlineProb
+from util.helper import post_args
 assert timm.__version__ >= "0.6.12"  # version check
 import timm.optim.optim_factory as optim_factory
 
@@ -100,6 +101,13 @@ def get_args_parser():
     parser.add_argument('--no_pin_mem', action='store_false', dest='pin_mem')
     parser.set_defaults(pin_mem=True)
 
+    # configure
+    parser.add_argument('--cfgs', nargs='+', default=[],
+                        help='<Required> Config files *.gin.', required=False)
+    parser.add_argument('--gin', nargs='+', 
+                        help='Overrides config values. e.g. --gin "section.option=value"')
+
+
     # distributed training parameters
     parser.add_argument('--world_size', default=1, type=int,
                         help='number of distributed processes')
@@ -151,6 +159,10 @@ def train_one_epoch(model: torch.nn.Module,online_prob,
                 loss,log = model(samples,targets=targets, epoch=epoch)
             else:
                 loss,log = model(samples[0],targets=targets, epoch=epoch)
+            
+            if online_prob:
+                acc = online_prob.train_one_step(samples[0], targets.flatten())
+                metric_logger.update(acc=acc)
 
         loss_value = loss.item()
 
@@ -167,10 +179,7 @@ def train_one_epoch(model: torch.nn.Module,online_prob,
             if hasattr(model,"update"):
                 model.update()
                 
-            if online_prob:
-                with torch.cuda.amp.autocast():
-                    acc = online_prob.train_one_step(samples, targets.flatten())
-                metric_logger.update(acc=acc)
+            
 
         torch.cuda.synchronize()
 
@@ -201,7 +210,7 @@ def train_one_epoch(model: torch.nn.Module,online_prob,
 
 def main(args):
     misc.init_distributed_mode(args)
-
+    post_args(args)
     if args.output_dir:
         output_dir=Path(args.output_dir)
     print('job dir: {}'.format(os.path.dirname(os.path.realpath(__file__))))
@@ -310,19 +319,20 @@ def main(args):
             log_writer=log_writer,
             args=args
         )
-        if args.output_dir and (epoch % args.ckpt_freq == 0 or epoch + 1 == args.epochs):
-            misc.save_model(
-                args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
-                loss_scaler=loss_scaler, epoch=epoch)
-        else:
-            misc.save_model(
-                args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
-                loss_scaler=loss_scaler, epoch=-1)
-
+        
         log_stats = {**{f'train/{k}': v for k, v in train_stats.items()},
                         'epoch': epoch,}
 
         if args.output_dir and misc.is_main_process():
+            if (epoch % args.ckpt_freq == 0 or epoch + 1 == args.epochs):
+                misc.save_model(
+                    args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
+                    loss_scaler=loss_scaler, epoch=epoch)
+            else:
+                misc.save_model(
+                    args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
+                    loss_scaler=loss_scaler, epoch=epoch,bac=False)
+
             if not args.no_wandb:
                 wandb.log(log_stats)
                 
@@ -349,7 +359,6 @@ def main(args):
             wandb.save(os.path.join(args.output_dir, "weights.pth"),base_path=args.output_dir)
 
 if __name__ == '__main__':
-    from util.helper import aug_parse
     parser = get_args_parser()
-    args = aug_parse(parser)
+    args = parser.parse_args()
     main(args)

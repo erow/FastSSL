@@ -25,6 +25,9 @@ import torch.backends.cudnn as cudnn
 from torch.utils.tensorboard import SummaryWriter
 
 import timm
+
+from model.prob import OnlineProb
+from util.helper import post_args
 assert timm.__version__ >= "0.6.12"  # version check
 import timm.optim.optim_factory as optim_factory
 
@@ -93,6 +96,13 @@ def get_args_parser():
                         help='Pin CPU memory in DataLoader for more efficient (sometimes) transfer to GPU.')
     parser.add_argument('--no_pin_mem', action='store_false', dest='pin_mem')
     parser.set_defaults(pin_mem=True)
+    # configure
+    parser.add_argument('--cfgs', nargs='+', default=[],
+                        help='<Required> Config files *.gin.', required=False)
+    parser.add_argument('--gin', nargs='+', 
+                        help='Overrides config values. e.g. --gin "section.option=value"')
+
+
 
     # distributed training parameters
     parser.add_argument('--world_size', default=1, type=int,
@@ -183,7 +193,12 @@ def train_one_epoch(model: torch.nn.Module,online_prob,
             for k,v in log.items():
                 log_writer.add_scale(k,v)
 
-
+        # debug for find_unused_parameters
+        if False:
+            for name,p in model.named_parameters():
+                if (p.requires_grad) and (p.grad is None):
+                    print(name)
+                    exit(-1) 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
@@ -191,7 +206,7 @@ def train_one_epoch(model: torch.nn.Module,online_prob,
 
 def main(args):
     misc.init_distributed_mode(args)
-
+    post_args(args)
     if args.output_dir:
         output_dir=Path(args.output_dir)
     print('job dir: {}'.format(os.path.dirname(os.path.realpath(__file__))))
@@ -308,20 +323,22 @@ def main(args):
             log_writer=log_writer,
             args=args
         )
-        if args.output_dir and (epoch % args.ckpt_freq == 0 or epoch + 1 == args.epochs):
-            misc.save_model(
-                args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
-                loss_scaler=loss_scaler, epoch=epoch)
-        else:
-            misc.save_model(
-                args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
-                loss_scaler=loss_scaler, epoch=-1)
+        
 
         log_stats = {**{f'train/{k}': v for k, v in train_stats.items()},
                         'epoch': epoch,}
 
         if args.output_dir and misc.is_main_process():
-            if not args.no_wandb:
+            if epoch % args.ckpt_freq == 0 or epoch + 1 == args.epochs:
+                misc.save_model(
+                    args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
+                    loss_scaler=loss_scaler, epoch=epoch)
+            else:
+                misc.save_model(
+                    args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
+                    loss_scaler=loss_scaler, epoch=epoch,bac=False)
+                
+            if wandb.run:
                 wandb.log(log_stats)
                 
             if log_writer is not None:
@@ -347,7 +364,6 @@ def main(args):
             wandb.save(os.path.join(args.output_dir, "weights.pth"),base_path=args.output_dir)
 
 if __name__ == '__main__':
-    from util.helper import aug_parse
     parser = get_args_parser()
-    args = aug_parse(parser)
+    args = parser.parse_args()
     main(args)

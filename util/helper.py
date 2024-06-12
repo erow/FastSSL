@@ -3,6 +3,22 @@ from pathlib import Path
 import gin
 
 
+def post_args(args):
+    import gin
+    import yaml
+    if not gin.config_is_locked() and hasattr(args, "cfgs") and hasattr(args, "gin"):
+        gin.parse_config_files_and_bindings(args.cfgs,args.gin)
+
+    if hasattr(args,"output_dir") and args.output_dir:
+        output_dir=Path(args.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+    
+        Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+        
+        with open(os.path.join(args.output_dir,'config.yml'), 'w') as f:
+            yaml.dump(vars(args), f)
+            
+        open(output_dir/"config.gin",'w').write(gin.config_str())
 def aug_parse(parser: argparse.ArgumentParser):
     import yaml
     parser.add_argument('--no_resume',default=False,action='store_true',help="")
