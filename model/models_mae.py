@@ -238,7 +238,7 @@ class MaskedAutoencoderViT(nn.Module):
 
 
 
-    def forward(self, imgs, **kwargs):
+    def forward(self, imgs, return_variables=False,**kwargs):
         if isinstance(imgs, list) or isinstance(imgs, tuple):
             imgs = imgs[0]
         ## dynamic pos embed
@@ -260,7 +260,10 @@ class MaskedAutoencoderViT(nn.Module):
         pred = self.forward_decoder(latent, ids_restore,decoder_pos_embed)  # [N, L, p*p*3]
         
         loss = self.target_loss(imgs, pred, mask)
-        return loss,{}
+        if return_variables:
+            return loss, latent
+        else:
+            return loss,{}
 
 def mae_tiny(**kwargs):
     model = MaskedAutoencoderViT(
