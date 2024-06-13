@@ -1,3 +1,18 @@
+"""
+Reference: https://github.com/google-research/simclr
+
+# Note
+
+## Keypoints in SimCLR
+
+- data augmentation: random cropping and random color distortion stand out.
+- Global BN (SyncBN): This operation aggregates BN mean and variance over all devices during the training.
+- Projector: a MLP with BN. By leveraging the nonlinear transformation g(·), more information can be formed and maintained in h.
+
+# Result
+
+
+"""
 import torch
 from torch import nn
 import torchvision.transforms as transforms
@@ -7,12 +22,14 @@ from .operation import *
 
 @gin.configurable
 class SimCLR(nn.Module):
-    def __init__(self, backbone='resnet18', out_dim=2048,mlp_dim=512, temperature=0.5):
+    def __init__(self, backbone='resnet50', out_dim=2048,mlp_dim=512, temperature=0.5):
         super(SimCLR, self).__init__()
         self.temperature = temperature
-        self.backbone = timm.create_model(backbone,pretrained=False,num_classes=out_dim)
+        backbone = timm.create_model(backbone,pretrained=False,num_classes=out_dim)
+        backbone = timm.layers.convert_sync_batchnorm(backbone)
+        self.backbone = backbone
         self.embed_dim = out_dim
-        self.projector = build_mlp(2, out_dim, mlp_dim, out_dim)
+        self.projector = build_mlp(2, out_dim, mlp_dim, out_dim, False)
 
     def representation(self, x):
         if isinstance(x, list) or isinstance(x, tuple):
@@ -42,7 +59,7 @@ class SimCLR(nn.Module):
 
         self.log = {
             "loss":loss.item(),
-            "loss_local":loss_local.item()
+            "loss_local": 0 if loss_local==0 else loss_local.item()
         }
 
         return loss+ loss_local, self.log

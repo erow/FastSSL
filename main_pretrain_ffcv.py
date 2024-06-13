@@ -198,7 +198,7 @@ def train_one_epoch(model: torch.nn.Module,online_prob,
             log_writer.add_scalar('epoch_1000x',epoch_1000x)
             log_writer.add_scalar('lr', lr, epoch_1000x)
             for k,v in log.items():
-                log_writer.add_scale(k,v)
+                log_writer.add_scalar(k,v,epoch_1000x)
 
 
     # gather the stats from all processes

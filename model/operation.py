@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
-from torch.distributed import group, ReduceOp
+from torch.distributed import group, ReduceOp, is_initialized
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from torch import Tensor
 import gin
@@ -17,6 +17,8 @@ def concat_all_gather(tensor):
     Performs all_gather operation on the provided tensors.
     *** Warning ***: torch.distributed.all_gather has no gradient.
     """
+    if not is_initialized():
+        return tensor
     tensors_gather = [torch.ones_like(tensor)
         for _ in range(torch.distributed.get_world_size())]
     torch.distributed.all_gather(tensors_gather, tensor, async_op=False)
@@ -25,6 +27,7 @@ def concat_all_gather(tensor):
     return output
 
 def contrastive_loss(q, k,temperature=0.1):
+    # NT-Xent (the normalized temperature-scaled cross entropy loss), applied in [Improved Deep Metric Learning with Multi-class N-pair Loss Objective]
     # normalize
     q = nn.functional.normalize(q, dim=1)
     k = nn.functional.normalize(k, dim=1)
@@ -68,7 +71,7 @@ def concat_all_gather_grad(tensor):
     Performs all_gather operation on the provided tensors.
     *** Warning ***: torch.distributed.all_gather has no gradient.
     """
-    if dist.get_world_size() == 1:
+    if not is_initialized():
         return tensor
     return AllGatherGrad.apply(tensor).flatten(0,1)
     
