@@ -20,7 +20,7 @@ from torch import nn
 import torch.distributed as dist
 from PIL import ImageFilter, ImageOps
 from torchvision import transforms
-from torchvision.transforms.v2 import Normalize, RandomResizedCrop, RandomHorizontalFlip, ColorJitter, ToTensor, RandomApply, RandomGrayscale, Compose, ToDtype
+from torchvision.transforms.v2 import Normalize, RandomResizedCrop, RandomHorizontalFlip, ColorJitter, ToTensor, RandomApply, RandomGrayscale, Compose, ToDtype, GaussianBlur, RandomSolarize
 import gin
 from PIL import Image
 
@@ -38,25 +38,6 @@ class ToDevice(nn.Module):
     def forward(self, x:torch.Tensor):
         return x.to(self.device,non_blocking=True)
     
-class GaussianBlur(nn.Module):
-    """
-    Apply Gaussian Blur to the PIL image.
-    """
-    def __init__(self, p=0.5, radius_min=0.1, radius_max=2.):
-        self.prob = p
-        self.radius_min = radius_min
-        self.radius_max = radius_max
-
-    def __call__(self, img):
-        do_it = random.random() <= self.prob
-        if not do_it:
-            return img
-
-        return img.filter(
-            ImageFilter.GaussianBlur(
-                radius=random.uniform(self.radius_min, self.radius_max)
-            )
-        )
 
 class Solarization(nn.Module):
     """
@@ -92,8 +73,9 @@ class SimpleAugmentation(nn.Module):
     
 @gin.configurable()
 class DataAugmentationDINO(nn.Module):
-    def __init__(self,img_size=224, global_crops_scale=(0.4, 1.), local_crops_scale=(0.05, 0.4), local_crops_number=8, color_jitter=True):
-        """Multi-view data augmentation.
+    def __init__(self,img_size=224, global_crops_scale=(0.4, 1.), local_crops_scale=(0.05, 0.4), local_crops_number=8):
+        """Multi-view data augmentation
+        Reference: https://github.com/facebookresearch/dino/blob/main/main_dino.py#L419
 
         Args:
             global_crops_scale (tuple, optional): _description_. Defaults to (0.4, 1.).
@@ -104,21 +86,17 @@ class DataAugmentationDINO(nn.Module):
             [2 x global views, local_crops_number x local views]
         """
         super().__init__()
-        if color_jitter:
-            flip_and_color_jitter = Compose([
-                RandomHorizontalFlip(p=0.5),
-                RandomApply(
-                    [ColorJitter(brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1)],
-                    p=0.8
-                ),
-                RandomGrayscale(p=0.2),
-            ])
-        else:
-            flip_and_color_jitter = Compose([])
+        flip_and_color_jitter = Compose([
+            RandomHorizontalFlip(p=0.5),
+            RandomApply(
+                [ColorJitter(brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1)],
+                p=0.8
+            ),
+            RandomGrayscale(p=0.2),
+        ])
 
         normalize = Compose([
             ToTensor(),
-            # ToDevice('cuda'),
             Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
         ])
 
@@ -126,14 +104,14 @@ class DataAugmentationDINO(nn.Module):
         self.global_transfo1 = Compose([
             RandomResizedCrop(img_size, scale=global_crops_scale, interpolation=Image.BICUBIC),
             flip_and_color_jitter,
-            GaussianBlur(1.0),
+            GaussianBlur(5),
             normalize,
         ])
         # second global crop
         self.global_transfo2 = Compose([
             RandomResizedCrop(img_size, scale=global_crops_scale, interpolation=Image.BICUBIC),
             flip_and_color_jitter,
-            GaussianBlur(0.1),
+            GaussianBlur(5),
             Solarization(0.2),
             normalize,
         ])
@@ -142,7 +120,7 @@ class DataAugmentationDINO(nn.Module):
         self.local_transfo = Compose([
             RandomResizedCrop(96, scale=local_crops_scale, interpolation=Image.BICUBIC),
             flip_and_color_jitter,
-            GaussianBlur(p=0.5),
+            RandomApply([GaussianBlur(5)],p=0.5),
             normalize,
         ])
 
@@ -153,5 +131,3 @@ class DataAugmentationDINO(nn.Module):
         for _ in range(self.local_crops_number):
             crops.append(self.local_transfo(image))
         return crops
-
-

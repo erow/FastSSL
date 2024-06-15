@@ -37,7 +37,7 @@ def contrastive_loss(q, k,temperature=0.1):
     logits = torch.einsum('nc,mc->nm', [q, k]) / temperature
     N = logits.shape[0]  # batch size per GPU
     labels = (torch.arange(N, dtype=torch.long) + N * torch.distributed.get_rank()).cuda()
-    return nn.CrossEntropyLoss()(logits, labels) * (2 * temperature)
+    return nn.CrossEntropyLoss()(logits, labels)
 
 
 class AllGatherGrad(torch.autograd.Function):
@@ -51,7 +51,7 @@ class AllGatherGrad(torch.autograd.Function):
 
         gathered_tensor = [torch.zeros_like(tensor) for _ in range(torch.distributed.get_world_size())]
 
-        dist.all_gather(gathered_tensor, tensor, group=group)
+        torch.distributed.all_gather(gathered_tensor, tensor, group=group)
         gathered_tensor = torch.stack(gathered_tensor, dim=0)
 
         return gathered_tensor

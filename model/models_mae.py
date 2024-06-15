@@ -71,6 +71,9 @@ class MaskedAutoencoderViT(nn.Module):
         self.target_loss = build_target(patch_size=patch_size)
         
         self.initialize_weights()
+    
+    def update(self):
+        pass
 
     def initialize_weights(self):
         # initialization

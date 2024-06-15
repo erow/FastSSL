@@ -14,13 +14,13 @@ from pathlib import Path
 
 import submitit
 import importlib
-import main_pretrain_ffcv
 def get_args_parser():
     # trainer_parser = trainer.get_args_parser()
     parser = argparse.ArgumentParser("Submitit for evaluation")
     parser.add_argument("--ngpus", default=8, type=int, help="Number of gpus to request on each node")
     parser.add_argument("--nodes", default=1, type=int, help="Number of nodes to request")
     parser.add_argument("-t", "--timeout", default=1440, type=int, help="Duration of the job")
+    parser.add_argument("--module", default='main_pretrain_ffcv', type=str)
     parser.add_argument("--mem", default=400, type=float, help="Memory to request")
 
     parser.add_argument("-p", "--partition", default="big", type=str, help="Partition where to submit")
@@ -52,7 +52,7 @@ class Trainer(object):
     def __init__(self, args, module_params):
         self.args = args
         self.module_params = module_params
-        self.module = main_pretrain_ffcv
+        self.module = importlib.import_module(args.module)
         
         ## reassing args
         parser = self.module.get_args_parser()

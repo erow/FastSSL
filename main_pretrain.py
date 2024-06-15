@@ -1,13 +1,3 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-
-# This source code is licensed under the license found in the
-# LICENSE file in the root directory of this source tree.
-# --------------------------------------------------------
-# References:
-# DeiT: https://github.com/facebookresearch/deit
-# BEiT: https://github.com/microsoft/unilm/tree/master/beit
-# --------------------------------------------------------
 from PIL import Image # a trick to solve loading lib problem
 import argparse
 import datetime
@@ -30,6 +20,8 @@ from model.prob import OnlineProb
 from util.helper import post_args
 assert timm.__version__ >= "0.6.12"  # version check
 import timm.optim.optim_factory as optim_factory
+from timm.layers import (convert_splitbn_model, convert_sync_batchnorm,
+                         set_fast_norm)
 
 import util.misc as misc
 from util.misc import NativeScalerWithGradNormCount as NativeScaler, load_pretrained_weights
@@ -43,13 +35,14 @@ import torchvision
 from typing import Iterable
 
 def get_args_parser():
-    parser = argparse.ArgumentParser('MAE pre-training', add_help=False)
+    parser = argparse.ArgumentParser('Fast Self-supervised Learning', add_help=False)
     parser.add_argument('--batch_size', default=64, type=int,
                         help='Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus)')
     parser.add_argument('--epochs', default=400, type=int)
     parser.add_argument('--accum_iter', default=1, type=int,
                         help='Accumulate gradient iterations (for increasing the effective batch size under memory constraints)')
     parser.add_argument('--ckpt_freq',type=int,default=10, help="frequency of saving checkpoint.")
+    parser.add_argument('--backup', default=False, action='store_true', help="backup the model.")
     parser.add_argument("--no_wandb", default=False, action="store_true", help="Use wandb for logging.")
     parser.add_argument("--dynamic_resolution", default=False, action="store_true", help="Use dynamic resolution.")
     
@@ -102,7 +95,7 @@ def get_args_parser():
     parser.add_argument('--gin', nargs='+', 
                         help='Overrides config values. e.g. --gin "section.option=value"')
 
-
+    parser.add_argument("--syncBN", default=False, action="store_true", help="Use Global batch normalization to sync all devices.")
 
     # distributed training parameters
     parser.add_argument('--world_size', default=1, type=int,
@@ -135,7 +128,10 @@ def train_one_epoch(model: torch.nn.Module,online_prob,
         print('log_dir: {}'.format(log_writer.log_dir))
 
     for data_iter_step, data in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
-        samples, targets = data
+        if args.data_set == "ffcv":
+            samples, targets = data[:-1], data[-1]
+        else:
+            samples, targets = data
         
         if isinstance(samples,list) or isinstance(samples,tuple):
             samples = [i.to(device, non_blocking=True) for i in samples]
@@ -146,7 +142,6 @@ def train_one_epoch(model: torch.nn.Module,online_prob,
         # we use a per iteration (instead of per epoch) lr scheduler
         if data_iter_step % accum_iter == 0:
             lr_sched.adjust_learning_rate(optimizer, data_iter_step / len(data_loader) + epoch, args)
-        
 
         with torch.cuda.amp.autocast():
             if args.multiview:
@@ -166,8 +161,7 @@ def train_one_epoch(model: torch.nn.Module,online_prob,
         if (data_iter_step + 1) % accum_iter == 0:
             optimizer.zero_grad()
             
-            if hasattr(model,"update"):
-                model.update()
+            model.module.update()
                 
             if online_prob:
                 with torch.cuda.amp.autocast():
@@ -207,20 +201,17 @@ def train_one_epoch(model: torch.nn.Module,online_prob,
 def main(args):
     misc.init_distributed_mode(args)
     post_args(args)
-    if args.output_dir:
-        output_dir=Path(args.output_dir)
     print('job dir: {}'.format(os.path.dirname(os.path.realpath(__file__))))
     print("{}".format(args).replace(', ', ',\n'))
-    import torch
-    device = torch.device(args.device)
+    
 
     # fix the seed for reproducibility
     seed = args.seed + misc.get_rank()
     torch.manual_seed(seed)
     np.random.seed(seed)
-
     cudnn.benchmark = True
 
+    # build dataset
     if args.multiview:
         transform_train = transform.DataAugmentationDINO()
     else:
@@ -242,12 +233,6 @@ def main(args):
         drop_last=True,
     )
     
-    if args.dynamic_resolution:
-        import torch._dynamo
-        torch._dynamo.config.suppress_errors = True
-        dres = DynamicMasking() 
-    else:
-        dres = None
     
     # define the model
     model = build_model(args)
@@ -256,8 +241,40 @@ def main(args):
     if args.compile:
         model = torch.compile(model)
     
+    train(args, data_loader_train, model)
+    
+def train(args, data_loader_train, model):
+    import torch
+    device = torch.device(args.device)
+
     model.to(device)
 
+    global_rank = misc.get_rank()
+    if args.output_dir:
+        output_dir=Path(args.output_dir)
+
+    if args.dynamic_resolution:
+        import torch._dynamo
+        torch._dynamo.config.suppress_errors = True
+        dres = DynamicMasking() 
+    else:
+        dres = None
+    
+    if global_rank == 0 and args.output_dir is not None:
+        args.log_dir = os.path.join(args.output_dir, 'log')
+        os.makedirs(args.log_dir, exist_ok=True)
+        # log with wandb
+        open(output_dir/"config.gin",'w').write(gin.operative_config_str(),)
+        if not args.no_wandb:
+            import wandb
+            wandb.init(dir=args.log_dir,config=args.__dict__,sync_tensorboard=True,resume=True, job_type='train')
+            wandb.save(os.path.join(args.output_dir, 'config.gin'),base_path=args.output_dir)
+        log_writer = SummaryWriter(log_dir=args.log_dir)
+    else:
+        log_writer = None
+
+    if args.syncBN:
+        model = convert_sync_batchnorm(model)
     model_without_ddp = model
     print("Model = %s" % str(model_without_ddp))
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -293,19 +310,6 @@ def main(args):
 
     print(f"Start training for {args.epochs} epochs")
     
-    if global_rank == 0 and args.output_dir is not None:
-        args.log_dir = os.path.join(args.output_dir, 'log')
-        os.makedirs(args.log_dir, exist_ok=True)
-        # log with wandb
-        open(output_dir/"config.gin",'w').write(gin.operative_config_str(),)
-        if not args.no_wandb:
-            import wandb
-            wandb.init(dir=args.log_dir,config=args.__dict__,sync_tensorboard=True,resume=True, job_type='train')
-            wandb.save(os.path.join(args.output_dir, 'config.gin'),base_path=args.output_dir)
-        log_writer = SummaryWriter(log_dir=args.log_dir)
-    else:
-        log_writer = None
-
     
     start_time = time.time()
     online_prob = OnlineProb(model_without_ddp) if args.online_prob else None
@@ -333,7 +337,8 @@ def main(args):
                 misc.save_model(
                     args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
                     loss_scaler=loss_scaler, epoch=epoch)
-            else:
+                
+            if args.backup:
                 misc.save_model(
                     args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
                     loss_scaler=loss_scaler, epoch=epoch,bac=False)
@@ -351,14 +356,9 @@ def main(args):
     print('Training time {}'.format(total_time_str))
     
     # save the weights
-    def remove_prefix(text, prefix):
-        if text.startswith(prefix):
-            return text[len(prefix) :]
-        return text
     if args.output_dir and misc.is_main_process():
         weights = model_without_ddp.state_dict()
-        if args.compile:
-            weights = {remove_prefix(k,"_orig_mod."): v.cpu() for k, v in weights.items()}
+        weights = {k.replace("_orig_mod.",""): v.cpu() for k, v in weights.items()}
         torch.save(weights, os.path.join(args.output_dir, "weights.pth"))
         if not args.no_wandb:
             wandb.save(os.path.join(args.output_dir, "weights.pth"),base_path=args.output_dir)
