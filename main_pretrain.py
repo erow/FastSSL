@@ -1,38 +1,44 @@
-from PIL import Image # a trick to solve loading lib problem
 import argparse
 import datetime
 import json
-import numpy as np
-import os
-import time
 import math
+import os
 import sys
-import gin
+import time
 from pathlib import Path
 
+import gin
+import numpy as np
+import timm
 import torch
 import torch.backends.cudnn as cudnn
+from PIL import Image  # a trick to solve loading lib problem
 from torch.utils.tensorboard import SummaryWriter
 
-import timm
+from util.prob import LinearProb, build_representations_fn
 
-from model.prob import OnlineProb
-from util.helper import post_args
 assert timm.__version__ >= "0.6.12"  # version check
+import importlib
+import pkgutil
+
 import timm.optim.optim_factory as optim_factory
 from timm.layers import (convert_splitbn_model, convert_sync_batchnorm,
                          set_fast_norm)
 
-import util.misc as misc
-from util.misc import NativeScalerWithGradNormCount as NativeScaler, load_pretrained_weights
 import util.lr_sched as lr_sched
-
-from model.build_model import build_model
-from model.dres import DynamicMasking
-from dataset import transform 
-import torchvision
+import util.misc as misc
+from util.helper import *
+from util.misc import NativeScalerWithGradNormCount as NativeScaler
+from util.misc import load_pretrained_weights
+    
 
 from typing import Iterable
+
+from dataset.build_dataset import build_dataset
+from util.dres import DynamicMasking
+
+import dataset.ffcv_transform
+import model.load
 
 def get_args_parser():
     parser = argparse.ArgumentParser('Fast Self-supervised Learning', add_help=False)
@@ -41,18 +47,29 @@ def get_args_parser():
     parser.add_argument('--epochs', default=400, type=int)
     parser.add_argument('--accum_iter', default=1, type=int,
                         help='Accumulate gradient iterations (for increasing the effective batch size under memory constraints)')
-    parser.add_argument('--ckpt_freq',type=int,default=10, help="frequency of saving checkpoint.")
-    parser.add_argument('--backup', default=False, action='store_true', help="backup the model.")
+    parser.add_argument('--ckpt_freq',type=int,default=50, help="frequency of saving checkpoint.")
+    parser.add_argument('--backup', default=True, action='store_true', help="backup the model.")
+    parser.add_argument('--no_backup',action='store_false', dest='backup')
     parser.add_argument("--no_wandb", default=False, action="store_true", help="Use wandb for logging.")
     parser.add_argument("--dynamic_resolution", default=False, action="store_true", help="Use dynamic resolution.")
     
     # Model parameters
-    parser.add_argument('--online_prob', default=False, action="store_true", help="Use online prob.")
+    parser.add_argument('--prob_path', default=None, help="The path of IF or ffcv.")
     parser.add_argument("--compile", default=False, action="store_true", help="Compile the module or not.")
-    parser.add_argument("--torchscript", default=False, action="store_true", help="Use torchscript or not.")
+    parser.add_argument("--flash_attn", default=False, action="store_true", help="Use flash attention.")
     parser.add_argument("-w", "--pretrained_weights", default=None, type=str, help="Path to pretrained weights.")
 
     # Optimizer parameters
+    parser.add_argument('--opt', default='adamw', type=str, metavar='OPTIMIZER',
+                        help='Optimizer (default: "adamw"')
+    parser.add_argument('--opt_eps', default=1e-8, type=float, metavar='EPSILON',
+                        help='Optimizer Epsilon (default: 1e-8)')
+    parser.add_argument('--opt_betas', default=None, type=float, nargs='+', metavar='BETA',
+                        help='Optimizer Betas (default: None, use opt default)')
+    parser.add_argument('--clip_grad', type=float, default=None, metavar='NORM',
+                        help='Clip gradient norm (default: None, no clipping)')
+    parser.add_argument('--momentum', type=float, default=0.9, metavar='M',
+                        help='SGD momentum (default: 0.9)')
     parser.add_argument('--weight_decay', type=float, default=0.05,
                         help='weight decay (default: 0.05)')
 
@@ -67,9 +84,8 @@ def get_args_parser():
                         help='epochs to warmup LR')
 
     # Dataset parameters
-    parser.add_argument('--data_set', default='IMNET', choices=['PZ1', 'IMNET', 'PZ2', 'ffcv'])
-    parser.add_argument("--multiview", default=False, action="store_true", help="Apply multiview augmentation.")
-    parser.add_argument('--data_path', default='/datasets01/imagenet_full_size/061417/', type=str,
+    parser.add_argument('--data_set', default='ffcv')
+    parser.add_argument('--data_path', default=os.getenv("IMAGENET_DIR"), type=str,
                         help='dataset path')
 
     parser.add_argument('--output_dir', default=None, type=str,
@@ -89,14 +105,7 @@ def get_args_parser():
                         help='Pin CPU memory in DataLoader for more efficient (sometimes) transfer to GPU.')
     parser.add_argument('--no_pin_mem', action='store_false', dest='pin_mem')
     parser.set_defaults(pin_mem=True)
-    # configure
-    parser.add_argument('--cfgs', nargs='+', default=[],
-                        help='<Required> Config files *.gin.', required=False)
-    parser.add_argument('--gin', nargs='+', 
-                        help='Overrides config values. e.g. --gin "section.option=value"')
-
     parser.add_argument("--syncBN", default=False, action="store_true", help="Use Global batch normalization to sync all devices.")
-
     # distributed training parameters
     parser.add_argument('--world_size', default=1, type=int,
                         help='number of distributed processes')
@@ -109,7 +118,7 @@ def get_args_parser():
 
 
                 
-def train_one_epoch(model: torch.nn.Module,online_prob, 
+def train_one_epoch(model, online_prob, 
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
                     device: torch.device, epoch: int, loss_scaler,
                     log_writer=None,
@@ -129,30 +138,33 @@ def train_one_epoch(model: torch.nn.Module,online_prob,
 
     for data_iter_step, data in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
         if args.data_set == "ffcv":
-            samples, targets = data[:-1], data[-1]
+            samples = data[:-1]
+            targets = data[-1]            
         else:
             samples, targets = data
         
         if isinstance(samples,list) or isinstance(samples,tuple):
             samples = [i.to(device, non_blocking=True) for i in samples]
+            if len(samples)==1:
+                samples = samples[0]
         else:
             samples = samples.to(device, non_blocking=True)
-        targets = targets.to(device, non_blocking=True)
+        targets = targets.to(device, non_blocking=True).flatten()
             
         # we use a per iteration (instead of per epoch) lr scheduler
         if data_iter_step % accum_iter == 0:
             lr_sched.adjust_learning_rate(optimizer, data_iter_step / len(data_loader) + epoch, args)
+        
 
         with torch.cuda.amp.autocast():
-            if args.multiview:
-                loss,log = model(samples,targets=targets, epoch=epoch)
-            else:
-                loss,log = model(samples,targets=targets, epoch=epoch)
+            loss, log = model(samples,targets=targets, epoch=epoch)
 
         loss_value = loss.item()
 
         if not math.isfinite(loss_value):
             print("Loss is {}, stopping training".format(loss_value))
+            with torch.cuda.amp.autocast():
+                loss, log = model(samples,targets=targets, epoch=epoch)
             sys.exit(1)
 
         loss /= accum_iter
@@ -165,8 +177,9 @@ def train_one_epoch(model: torch.nn.Module,online_prob,
                 
             if online_prob:
                 with torch.cuda.amp.autocast():
-                    acc = online_prob.train_one_step(samples, targets.flatten())
-                metric_logger.update(acc=acc)
+                    log.update(online_prob.step(samples,targets))
+                for k,v in log.items():
+                    metric_logger.update(**{k:v})
 
         torch.cuda.synchronize()
 
@@ -174,6 +187,8 @@ def train_one_epoch(model: torch.nn.Module,online_prob,
 
         lr = optimizer.param_groups[-1]["lr"]
         metric_logger.update(lr=lr)
+        
+        
 
         loss_value_reduce = misc.all_reduce_mean(loss_value)
         if log_writer is not None and (data_iter_step + 1) % accum_iter == 0:
@@ -185,81 +200,63 @@ def train_one_epoch(model: torch.nn.Module,online_prob,
             log_writer.add_scalar('epoch_1000x',epoch_1000x)
             log_writer.add_scalar('lr', lr, epoch_1000x)
             for k,v in log.items():
-                log_writer.add_scalar(k,v)
+                log_writer.add_scalar(f'{k}', v, epoch_1000x)
 
-        # debug for find_unused_parameters
-        if False:
-            for name,p in model.named_parameters():
-                if (p.requires_grad) and (p.grad is None):
-                    print(name)
-                    exit(-1) 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
+import torch
+
 def main(args):
     misc.init_distributed_mode(args)
-    post_args(args)
+    
     print('job dir: {}'.format(os.path.dirname(os.path.realpath(__file__))))
     print("{}".format(args).replace(', ', ',\n'))
-    
 
     # fix the seed for reproducibility
     seed = args.seed + misc.get_rank()
-    torch.manual_seed(seed)
-    np.random.seed(seed)
+    misc.init_seed(seed)
     cudnn.benchmark = True
 
     # build dataset
-    if args.multiview:
-        transform_train = transform.DataAugmentationDINO()
-    else:
-        transform_train = transform.SimpleAugmentation()
-    dataset_train = torchvision.datasets.ImageFolder(os.path.join(args.data_path, 'train'), transform=transform_train)
+    dataset_train = build_dataset(args)
     
     num_tasks = misc.get_world_size()
     global_rank = misc.get_rank()
-
-    sampler_train = torch.utils.data.DistributedSampler(
-        dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=True
-    )
-    print("Sampler_train = %s" % str(sampler_train))
-    data_loader_train = torch.utils.data.DataLoader(
-        dataset_train, sampler=sampler_train,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        pin_memory=args.pin_mem,
-        drop_last=True,
-    )
+    if args.data_set != "ffcv":
+        sampler_train = torch.utils.data.DistributedSampler(
+            dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=True
+        )
+        print("Sampler_train = %s" % str(sampler_train))
+        data_loader_train = torch.utils.data.DataLoader(
+            dataset_train, sampler=sampler_train,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            pin_memory=args.pin_mem,
+            drop_last=True,
+        )
+    else:
+        data_loader_train = dataset_train
     
-    
-    # define the model
+    # initialize model
     model = build_model(args)
     if args.pretrained_weights:
-        load_pretrained_weights(model, args.pretrained_weights)
+        load_pretrained_weights(model.visual, args.pretrained_weights)
     if args.compile:
         model = torch.compile(model)
-    
+
     train(args, data_loader_train, model)
-    
-def train(args, data_loader_train, model):
+
+
+def train(args, data_loader_train,model):
     import torch
     device = torch.device(args.device)
-
-    model.to(device)
-
-    global_rank = misc.get_rank()
     if args.output_dir:
         output_dir=Path(args.output_dir)
 
-    if args.dynamic_resolution:
-        import torch._dynamo
-        torch._dynamo.config.suppress_errors = True
-        dres = DynamicMasking() 
-    else:
-        dres = None
-    
+    global_rank = misc.get_rank()
     if global_rank == 0 and args.output_dir is not None:
         args.log_dir = os.path.join(args.output_dir, 'log')
         os.makedirs(args.log_dir, exist_ok=True)
@@ -275,6 +272,17 @@ def train(args, data_loader_train, model):
 
     if args.syncBN:
         model = convert_sync_batchnorm(model)
+
+    if args.dynamic_resolution:
+        import torch._dynamo
+        torch._dynamo.config.suppress_errors = True
+        dres = DynamicMasking() 
+    else:
+        dres = None
+    
+    
+    model.to(device)
+
     model_without_ddp = model
     print("Model = %s" % str(model_without_ddp))
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -292,12 +300,12 @@ def train(args, data_loader_train, model):
     print("effective batch size: %d" % eff_batch_size)
 
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=False)
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
         model_without_ddp = model.module
     
     # following timm: set wd as 0 for bias and norm layers
     param_groups = optim_factory.param_groups_weight_decay(model_without_ddp, args.weight_decay)
-    optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9, 0.95))
+    optimizer = timm.optim.create_optimizer(args, param_groups)
     print(optimizer)
     loss_scaler = NativeScaler()
 
@@ -308,54 +316,53 @@ def train(args, data_loader_train, model):
     if args.resume: print("Found checkpoint at %s" % args.resume)
     misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
 
-    print(f"Start training for {args.epochs} epochs")
-    
+    print(f"Start training for {args.epochs} epochs")    
     
     start_time = time.time()
-    online_prob = OnlineProb(model_without_ddp) if args.online_prob else None
-    if online_prob:
-        online_prob.classifer.to(device)
+
+    names, representations_fn = build_representations_fn(model_without_ddp)
+    online_prob = LinearProb(args.prob_path, names, representations_fn, num_classes=1000,
+        ).to(device) if args.prob_path else None
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed and args.data_set != "ffcv":
             data_loader_train.sampler.set_epoch(epoch)
         if dres:
             dres(model_without_ddp, data_loader_train,epoch,is_ffcv=args.data_set == "ffcv")
-                
+
         train_stats = train_one_epoch(
             model, online_prob,data_loader_train,
             optimizer, device, epoch, loss_scaler,
             log_writer=log_writer,
             args=args
         )
-        
 
-        log_stats = {**{f'train/{k}': v for k, v in train_stats.items()},
-                        'epoch': epoch,}
-
-        if args.output_dir and misc.is_main_process():
-            if epoch % args.ckpt_freq == 0 or epoch + 1 == args.epochs:
+        if args.output_dir:
+            if (epoch % args.ckpt_freq == 0 or epoch + 1 == args.epochs):
                 misc.save_model(
                     args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
                     loss_scaler=loss_scaler, epoch=epoch)
-                
             if args.backup:
                 misc.save_model(
                     args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
-                    loss_scaler=loss_scaler, epoch=epoch,bac=False)
-                
-            if wandb.run:
+                    loss_scaler=loss_scaler, epoch=epoch,backup=False)
+
+        log_stats = {**{f'train/{k}': v for k, v in train_stats.items()},
+                        'epoch': epoch,}
+        
+        if args.output_dir and misc.is_main_process():
+            if not args.no_wandb:
                 wandb.log(log_stats)
                 
             if log_writer is not None:
                 log_writer.flush()
             with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
                 f.write(json.dumps(log_stats) + "\n")
+    
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
     
-    # save the weights
     if args.output_dir and misc.is_main_process():
         weights = model_without_ddp.state_dict()
         weights = {k.replace("_orig_mod.",""): v.cpu() for k, v in weights.items()}
@@ -365,5 +372,5 @@ def train(args, data_loader_train, model):
 
 if __name__ == '__main__':
     parser = get_args_parser()
-    args = parser.parse_args()
+    args = aug_parse(parser)
     main(args)

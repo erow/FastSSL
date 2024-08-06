@@ -377,3 +377,8 @@ def all_reduce_mean(x):
         return x_reduce.item()
     else:
         return x
+    
+def init_seed(seed):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)

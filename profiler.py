@@ -30,7 +30,6 @@ import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 from tqdm import tqdm
 
-from main_pretrain import *
 from torch.profiler import profile, record_function, ProfilerActivity, schedule
 
 

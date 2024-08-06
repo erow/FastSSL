@@ -122,7 +122,7 @@ def ColorJitterPipeline(img_size=224,scale=(0.08, 1.0),device='cuda'):
     return pipelines
 
 @gin.configurable
-def MultiviewPipeline(img_size=224,scale=(0.4, 1.0),local_crops_number=8,
+def MultiviewPipeline(img_size=224,scale=(0.4, 1.0),local_crops_number=0,
                       local_img_size=96,device='cuda'):
     k = local_img_size/img_size
     local_scale=(scale[0]*k, scale[1]*k)
@@ -135,6 +135,50 @@ def MultiviewPipeline(img_size=224,scale=(0.4, 1.0),local_crops_number=8,
         ToDevice(torch.device(device),non_blocking=True),
         tfms.RandomGrayscale(p=0.1),
         tfms.GaussianBlur(3, sigma=(0.1, 2)),
+    ]
+    image_pipeline2 = [
+        RandomHorizontalFlip(),
+        RandomColorJitter(0.8, 0.4, 0.4, 0.2, p=0.1),
+        NormalizeImage(IMAGENET_MEAN, IMAGENET_STD, np.float32),
+        ToTensor(), ToTorchImage(),
+        Convert(torch.float16),
+        ToDevice(torch.device(device),non_blocking=True),
+        tfms.RandomGrayscale(p=0.1),
+        tfms.GaussianBlur(3, sigma=(0.1, 2)),
+        tfms.RandomSolarize(0,0.2), # asymmetric augmentation
+    ]
+    def _local_pipeline():
+        return [
+            RandomHorizontalFlip(),
+            RandomColorJitter(0.8, 0.4, 0.4, 0.2, 0.1),
+            NormalizeImage(IMAGENET_MEAN, IMAGENET_STD, np.float32),
+            ToTensor(), ToTorchImage(),
+            Convert(torch.float16),
+            ToDevice(torch.device(device),non_blocking=True),
+        ]
+    label_pipeline = [IntDecoder(), ToTensor(),View(-1)]
+    # Pipeline for each data field
+    from ffcv.pipeline import PipelineSpec
+    pipelines = {
+        'image': PipelineSpec("image",RandomResizedCropRGBImageDecoder((img_size, img_size),scale=scale),transforms=image_pipeline),
+        'image2': PipelineSpec("image",RandomResizedCropRGBImageDecoder((img_size, img_size),scale=scale),transforms=image_pipeline2),        
+    } 
+    for i in range(local_crops_number):
+        pipelines[f"local_{i}"] = PipelineSpec("image",RandomResizedCropRGBImageDecoder((local_img_size, local_img_size),scale=local_scale),transforms=_local_pipeline())
+    pipelines['label'] = label_pipeline
+    return pipelines
+
+@gin.configurable
+def AsymviewPipeline(img_size=224,scale=(0.4, 1.0),local_crops_number=8,
+                      local_img_size=96,device='cuda'):
+    k = local_img_size/img_size
+    local_scale=(scale[0]*k, scale[1]*k)
+    
+    image_pipeline = [
+        RandomHorizontalFlip(),
+        NormalizeImage(IMAGENET_MEAN, IMAGENET_STD, np.float32),
+        ToTensor(), ToTorchImage(),
+        ToDevice(torch.device(device),non_blocking=True),
     ]
     image_pipeline2 = [
         RandomHorizontalFlip(),

@@ -88,9 +88,9 @@ def build_mlp(num_layers, input_dim, mlp_dim, output_dim, last_bn=True,hidden_bn
             mlp.append(nn.Linear(dim1, dim2, bias=True))
 
         if l < num_layers - 1:
+            mlp.append(activation())
             if hidden_bn:
                 mlp.append(nn.BatchNorm1d(dim2))
-            mlp.append(activation())
         elif last_bn:
             # follow SimCLR's design: https://github.com/google-research/simclr/blob/master/model_util.py#L157
             # for simplicity, we further removed gamma in BN

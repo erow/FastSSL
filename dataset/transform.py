@@ -20,7 +20,7 @@ from torch import nn
 import torch.distributed as dist
 from PIL import ImageFilter, ImageOps
 from torchvision import transforms
-from torchvision.transforms.v2 import Normalize, RandomResizedCrop, RandomHorizontalFlip, ColorJitter, ToTensor, RandomApply, RandomGrayscale, Compose, ToDtype, GaussianBlur, RandomSolarize
+from torchvision.transforms.v2 import Normalize, RandomResizedCrop, RandomHorizontalFlip, ColorJitter, ToTensor, RandomApply, RandomGrayscale, Compose, ToDtype
 import gin
 from PIL import Image
 
@@ -38,6 +38,25 @@ class ToDevice(nn.Module):
     def forward(self, x:torch.Tensor):
         return x.to(self.device,non_blocking=True)
     
+class GaussianBlur(nn.Module):
+    """
+    Apply Gaussian Blur to the PIL image.
+    """
+    def __init__(self, p=0.5, radius_min=0.1, radius_max=2.):
+        self.prob = p
+        self.radius_min = radius_min
+        self.radius_max = radius_max
+
+    def __call__(self, img):
+        do_it = random.random() <= self.prob
+        if not do_it:
+            return img
+
+        return img.filter(
+            ImageFilter.GaussianBlur(
+                radius=random.uniform(self.radius_min, self.radius_max)
+            )
+        )
 
 class Solarization(nn.Module):
     """
@@ -70,7 +89,7 @@ class SimpleAugmentation(nn.Module):
         decoder = self.transforms[0]
         decoder.size=(img_size,img_size)
 
-    
+
 @gin.configurable()
 class DataAugmentationDINO(nn.Module):
     def __init__(self,img_size=224, global_crops_scale=(0.4, 1.), local_crops_scale=(0.05, 0.4), local_crops_number=8):

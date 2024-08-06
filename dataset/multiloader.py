@@ -1,38 +1,27 @@
 
-import enum
-from os import environ
-import ast
 from multiprocessing import cpu_count
-from re import sub
-from typing import Any, Callable, Mapping, Sequence, Type, Union, Literal
-from collections import defaultdict
-from collections.abc import Collection
-from enum import Enum, unique, auto
-
+from typing import Any, Callable, Literal, Mapping, Sequence, Type, Union
+import numpy as np
+import torch
 from ffcv.fields.base import Field
-from ffcv.loader.epoch_iterator import EpochIterator
 from ffcv.loader import Loader
+from ffcv.loader.loader import (DEFAULT_PROCESS_CACHE, ORDER_MAP, ORDER_TYPE,
+                                OrderOption)
+from ffcv.memory_managers import (MemoryManager, OSCacheManager,
+                                  ProcessCacheManager)
+from ffcv.pipeline import Compiler, Pipeline, PipelineSpec
+from ffcv.pipeline.graph import Graph
+from ffcv.pipeline.operation import Operation
 from ffcv.reader import Reader
 from ffcv.traversal_order.base import TraversalOrder
-from ffcv.traversal_order import Random, Sequential, QuasiRandom
-from ffcv.pipeline import Pipeline, PipelineSpec, Compiler
-from ffcv.pipeline.operation import Operation
-from ffcv.pipeline.graph import Graph
-from ffcv.memory_managers import (
-    ProcessCacheManager, OSCacheManager, MemoryManager
-)
-import torch, gin
-import numpy as np
 
-
-
-from ffcv.loader.loader import OrderOption, ORDER_TYPE, ORDER_MAP, DEFAULT_PROCESS_CACHE
 
 class MultiLoader(Loader):
     def __init__(self,
                 fname: str,
                 batch_size: int,
                 num_workers: int = -1,
+                cache_type: int = DEFAULT_PROCESS_CACHE,
                 order: Union[ORDER_TYPE, TraversalOrder] = OrderOption.SEQUENTIAL,
                 distributed: bool = False,
                 seed: int = None,  # For ordering of samples
@@ -59,6 +48,7 @@ class MultiLoader(Loader):
             'fname': fname,
             'batch_size': batch_size,
             'num_workers': num_workers,
+            'os_cache': cache_type,
             'order': order,
             'distributed': distributed,
             'seed': seed,
@@ -89,12 +79,23 @@ class MultiLoader(Loader):
         else:
             self.indices = np.array(indices)
 
-        self.memory_manager: MemoryManager = OSCacheManager(self.reader)
-
-
+        
+        if cache_type == 0:
+            self.memory_manager: MemoryManager = OSCacheManager(self.reader)
+        elif cache_type == 1:
+            self.memory_manager: MemoryManager = ProcessCacheManager(
+                self.reader)
+        elif cache_type == 2:
+            from ffcv.memory_managers.shared_cache import SharedMemoryManager
+            self.memory_manager: MemoryManager = SharedMemoryManager(self.reader)
+        else:
+            raise ValueError("Unknown cache type. Use 0 for process cache, 1 for os cache, or 2 for no cache.")
+        
         if order in ORDER_MAP:
             self.traversal_order: TraversalOrder = ORDER_MAP[order](self)
         elif isinstance(order, TraversalOrder):
+            self.traversal_order: TraversalOrder = order(self)
+        elif issubclass(order, TraversalOrder):
             self.traversal_order: TraversalOrder = order(self)
         else:
             raise ValueError(f"Order {order} is not a supported order type or a subclass of TraversalOrder")
@@ -143,4 +144,3 @@ class MultiLoader(Loader):
         
         self.generate_code()
         self.first_traversal_order = self.next_traversal_order()
-        

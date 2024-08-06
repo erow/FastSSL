@@ -161,6 +161,8 @@ class MaskedAutoencoderViT(nn.Module):
         return x_masked, mask, ids_restore
 
     def representation(self, x, pos_embed=None):
+        if isinstance(x,list) or isinstance(x, tuple):
+            x=x[0]
         B, C, H, W = x.shape
         ## dynamic pos embed
         pos_embed = resample_abs_pos_embed(
@@ -316,3 +318,12 @@ mae_vit_small_patch16 = mae_vit_small_patch16_dec512d8b
 mae_vit_base_patch16 = mae_vit_base_patch16_dec512d8b  # decoder: 512 dim, 8 blocks
 mae_vit_large_patch16 = mae_vit_large_patch16_dec512d8b  # decoder: 512 dim, 8 blocks
 mae_vit_huge_patch14 = mae_vit_huge_patch14_dec512d8b  # decoder: 512 dim, 8 blocks
+
+
+def build_mae_backbone(model_name):
+    if model_name == 'vit_small':
+        model = mae_vit_small_patch16()
+    elif  model_name == 'vit_base':
+        model = mae_vit_base_patch16()
+
+    return model
