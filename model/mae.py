@@ -71,9 +71,6 @@ class MaskedAutoencoderViT(nn.Module):
         self.target_loss = build_target(patch_size=patch_size)
         
         self.initialize_weights()
-    
-    def update(self):
-        pass
 
     def initialize_weights(self):
         # initialization
@@ -161,8 +158,6 @@ class MaskedAutoencoderViT(nn.Module):
         return x_masked, mask, ids_restore
 
     def representation(self, x, pos_embed=None):
-        if isinstance(x,list) or isinstance(x, tuple):
-            x=x[0]
         B, C, H, W = x.shape
         ## dynamic pos embed
         pos_embed = resample_abs_pos_embed(
@@ -243,7 +238,8 @@ class MaskedAutoencoderViT(nn.Module):
 
 
 
-    def forward(self, imgs, return_variables=False,**kwargs):
+    def forward(self, imgs,**kwargs):
+        self.log = {}
         if isinstance(imgs, list) or isinstance(imgs, tuple):
             imgs = imgs[0]
         ## dynamic pos embed
@@ -265,65 +261,68 @@ class MaskedAutoencoderViT(nn.Module):
         pred = self.forward_decoder(latent, ids_restore,decoder_pos_embed)  # [N, L, p*p*3]
         
         loss = self.target_loss(imgs, pred, mask)
-        if return_variables:
-            return loss, latent
-        else:
-            return loss,{}
+        return loss, self.log
 
+@gin.configurable()
 def mae_tiny(**kwargs):
-    model = MaskedAutoencoderViT(
-        patch_size=16,embed_dim=196,depth=12,num_heads=12,
+    default_cfg = dict(
+        patch_size=16,embed_dim=192,depth=12,num_heads=12,
         decoder_embed_dim=96,decoder_depth=1,decoder_num_heads=3,
         mlp_ratio=4,
-        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+        norm_layer=partial(nn.LayerNorm, eps=1e-6)
+    )
+    default_cfg.update(kwargs)
+        
+    model = MaskedAutoencoderViT(**default_cfg)
     return model
 
+@gin.configurable()
 def mae_vit_small_patch16_dec512d8b(**kwargs):
-    model = MaskedAutoencoderViT(
+    default_cfg = dict(
         patch_size=16, embed_dim=384, depth=12, num_heads=6, 
         decoder_embed_dim=512, decoder_depth=4, decoder_num_heads=16,
         mlp_ratio=4,
-        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+        norm_layer=partial(nn.LayerNorm, eps=1e-6))
+    default_cfg.update(kwargs)
+        
+    model = MaskedAutoencoderViT(**default_cfg)
     return model
 
+@gin.configurable()
 def mae_vit_base_patch16_dec512d8b(**kwargs):
-    model = MaskedAutoencoderViT(
+    default_cfg = dict(
         patch_size=16, embed_dim=768, depth=12, num_heads=12,
         decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
-        mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+        mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6))
+    default_cfg.update(kwargs)
+        
+    model = MaskedAutoencoderViT(**default_cfg)
     return model
 
-
+@gin.configurable()
 def mae_vit_large_patch16_dec512d8b(**kwargs):
-    model = MaskedAutoencoderViT(
+    default_cfg = dict(
         patch_size=16, embed_dim=1024, depth=24, num_heads=16,
         decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
-        mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+        mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6))
+    default_cfg.update(kwargs)
+        
+    model = MaskedAutoencoderViT(**default_cfg)
     return model
 
-
+@gin.configurable()
 def mae_vit_huge_patch14_dec512d8b(**kwargs):
-    model = MaskedAutoencoderViT(
+    default_cfg = dict(
         patch_size=14, embed_dim=1280, depth=32, num_heads=16,
         decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
-        mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+        mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6))
+    default_cfg.update(kwargs)
+        
+    model = MaskedAutoencoderViT(**default_cfg)
     return model
-
-def replace_module(model: nn.Module, src_attn,tar_attn):
-    for name, module in model.named_modules():
-        pass
 
 # set recommended archs
 mae_vit_small_patch16 = mae_vit_small_patch16_dec512d8b
 mae_vit_base_patch16 = mae_vit_base_patch16_dec512d8b  # decoder: 512 dim, 8 blocks
 mae_vit_large_patch16 = mae_vit_large_patch16_dec512d8b  # decoder: 512 dim, 8 blocks
 mae_vit_huge_patch14 = mae_vit_huge_patch14_dec512d8b  # decoder: 512 dim, 8 blocks
-
-
-def build_mae_backbone(model_name):
-    if model_name == 'vit_small':
-        model = mae_vit_small_patch16()
-    elif  model_name == 'vit_base':
-        model = mae_vit_base_patch16()
-
-    return model

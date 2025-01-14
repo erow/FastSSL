@@ -16,8 +16,8 @@ def aug_parse(parser: argparse.ArgumentParser):
     parser.add_argument('--gin', nargs='+', 
                         help='Overrides config values. e.g. --gin "section.option=value"')
    
-    args, unkowns = parser.parse_known_args()
-    print("warn! unknown args: ", unkowns)
+    args = parser.parse_args()
+    
     if args.output_dir:
         output_dir=Path(args.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)

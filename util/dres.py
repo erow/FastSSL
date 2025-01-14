@@ -38,7 +38,7 @@ DEFAULT_SCHEME ={
 @gin.configurable
 class DynamicMasking:
     def __init__(self, start_ramp=gin.REQUIRED, end_ramp=gin.REQUIRED,  
-                    scheme: int|List = 2):
+                    scheme = 2):
         if isinstance(scheme, int):
             scheme = DEFAULT_SCHEME[scheme]
         else:

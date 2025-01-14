@@ -1,0 +1,3 @@
+build_dataset.transform_fn=@DataAugmentationDINO
+DataAugmentationDINO.img_size=32
+DataAugmentationDINO.local_crops_number=0

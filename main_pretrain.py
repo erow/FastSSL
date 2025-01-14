@@ -56,7 +56,6 @@ def get_args_parser():
     # Model parameters
     parser.add_argument('--prob_path', default=None, help="The path of IF or ffcv.")
     parser.add_argument("--compile", default=False, action="store_true", help="Compile the module or not.")
-    parser.add_argument("--flash_attn", default=False, action="store_true", help="Use flash attention.")
     parser.add_argument("-w", "--pretrained_weights", default=None, type=str, help="Path to pretrained weights.")
 
     # Optimizer parameters
@@ -184,6 +183,8 @@ def train_one_epoch(model, online_prob,
         torch.cuda.synchronize()
 
         metric_logger.update(loss=loss_value)
+        for k,v in log.items():
+            metric_logger.update(**{k:v})
 
         lr = optimizer.param_groups[-1]["lr"]
         metric_logger.update(lr=lr)
@@ -275,6 +276,7 @@ def train(args, data_loader_train,model):
 
     if args.dynamic_resolution:
         import torch._dynamo
+        from model.dres import DynamicMasking
         torch._dynamo.config.suppress_errors = True
         dres = DynamicMasking() 
     else:

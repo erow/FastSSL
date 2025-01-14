@@ -1,0 +1,5 @@
+create_backbone.name='vit_tiny_patch16_224'
+create_backbone.patch_size=4
+create_backbone.depth=12
+create_backbone.img_size=32
+create_backbone.num_heads=12

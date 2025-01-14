@@ -1,0 +1,29 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python Debugger: Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "SimCLR",
+            "type": "debugpy",
+            "module": "torch.distributed.launch",            
+            "console": "integratedTerminal",
+            "args": [
+                "--nproc_per_node=1",                
+                "${workspaceFolder}/main_pretrain.py",
+                "--batch_size=20", "--opt=adamw", "--blr=5e-4", "--epochs=100", 
+                "--data_path=../data/", "--data_set=cifar10",
+                "--cfgs", "configs/cifar10.gin", "configs/vitt.gin",
+                "--gin", "build_dataset.transform_fn=@DataAugmentationDINO", "build_model.model_fn=@SimCLR",
+            ],
+        }
+    ]
+}
