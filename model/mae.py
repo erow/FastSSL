@@ -21,7 +21,7 @@ from timm.layers.pos_embed import resample_abs_pos_embed
 from util.pos_embed import get_2d_sincos_pos_embed
 import gin
 from torchvision.transforms import GaussianBlur
-from .target import build_target
+from layers.target import build_target
 # recipe https://github.com/facebookresearch/mae/blob/main/PRETRAIN.md
 @gin.configurable()
 class MaskedAutoencoderViT(nn.Module):

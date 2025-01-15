@@ -4,6 +4,7 @@ Reference: https://github.com/facebookresearch/dino
 # Keypoints
 - Center: the key to avoiding collapse.
 - DINO head: WeightNorm is applied at the end and the weight_g (magnitude) is fixed. Therefore, it only optimizes the direction, which equals to L2-normalization. In addition, BN is removed. L2-normalization bottleneck stabilizes the training of DINO with deep projection head.
+- freeze last layer: the .last_layer in 
 - output dimension: large output dimensionality improves the performance. 65536 is the best.
 
 
@@ -22,6 +23,8 @@ import timm
 import numpy as np
 from timm.utils import ModelEmaV2
 from timm.layers import trunc_normal_
+
+from layers.backbone import create_backbone
 
 @gin.configurable
 class DINOHead(nn.Module):
@@ -59,37 +62,43 @@ class DINOHead(nn.Module):
         x = nn.functional.normalize(x, dim=-1, p=2)
         x = self.last_layer(x)
         return x
-    
+
+
 @gin.configurable
 class DINO(nn.Module):
-    def __init__(self, backbone_name: str='vit_small_patch16_224', 
-                 dim=4096,      
-                 m=0.996,
+    def __init__(self, 
+                 embed_dim = 2048,
+                 out_dim=60000, 
                  teacher_temp=0.05, student_temp=0.1,
                  center_momentum=0.9):
         """
-        dim: feature dimension (default: 4096)
+        dim: feature dimension (default: 60000)
         teacher_temp: softmax temperature for teacher. Final value (after linear warmup) of the teacher temperature. For most experiments, anything above 0.07 is unstable. We recommend  starting with the default value of 0.04 and increase this slightly if needed.
         student_temp: 
         """
         super().__init__()
-        self.embed_dim = dim
-        self.m = m
+        self.out_dim = out_dim
         self.center_momentum = center_momentum
-        self.register_buffer("center", torch.zeros(1, dim))
+        self.register_buffer("center", torch.zeros(1, out_dim))
         self.student_temp = student_temp
         self.teacher_temp = teacher_temp
 
         # build encoders
-        backbone = create_model(backbone_name,num_classes=0)
-        in_dim = backbone(torch.randn(1, 3, 224, 224)).shape[-1]
-        projector = DINOHead(in_dim, dim)
+        backbone = create_backbone()        
+        projector = DINOHead(embed_dim, out_dim)
+        projector.last_layer.requires_grad_(False)
+        u,s,v = torch.linalg.svd(torch.rand(out_dim,out_dim))
+        ortho = u @ v.T
+        v=projector.last_layer.weight_v
+        v.data[:] = ortho[:,:v.shape[1]]
+        self.embed_dim = embed_dim
         self.student = nn.Sequential(backbone,projector)
-
-        # _teacher = timm.utils.ModelEmaV2(self.student,m)
-        _teacher = nn.Sequential(create_model(backbone_name,num_classes=0),DINOHead(in_dim, dim))
+        
+        _teacher = nn.Sequential(create_backbone(),
+                                 DINOHead(embed_dim, out_dim))
         _teacher.requires_grad_(False)
         self._teacher = _teacher
+        self.update(0)
 
     @torch.no_grad()
     def teacher(self,x):
@@ -109,15 +118,16 @@ class DINO(nn.Module):
         self.center = self.center * self.center_momentum + batch_center * (1 - self.center_momentum)
     
     @torch.no_grad()
-    def update(self):
+    def update(self,m):
         for ema_v, model_v in zip(self._teacher.state_dict().values(), self.student.state_dict().values()):
-            ema_v.copy_(self.m * model_v + (1.0 - self.m) * ema_v)
+            ema_v.copy_(m * model_v + (1.0 - m) * ema_v)
 
     def representation(self, x):
         if isinstance(x, list) or isinstance(x, tuple):
             x = x[0]
-        x = self.teacher(x)
-        return x
+        latent = self._teacher[0](x)
+        proj = self._teacher[1](latent)
+        return dict(latent=latent,proj=proj)
 
     def forward(self, imgs, **kwargs):
         """
@@ -128,36 +138,51 @@ class DINO(nn.Module):
         Output:
             loss
         """
+        self.log = {}
         x1, x2 = imgs[:2]
         local_x = imgs[2:]
 
         # compute features
-        q1 = self.student(x1)/self.student_temp
-        q2 = self.student(x2)/self.student_temp
-
-        k1 = self.teacher(x1)
-        pk1 = F.softmax((k1 - self.center)/self.teacher_temp,dim=-1)
-        k2 = self.teacher(x2)
-        pk2 = F.softmax((k2 - self.center)/self.teacher_temp,dim=-1)
+        logit1 = self.student(x1)
+        logit2 = self.student(x2)
+        
+        with torch.no_grad():
+            t_output1 = self.teacher(x1)
+            t_output2 = self.teacher(x2)
+            q1 = F.softmax((t_output1 - self.center)/self.teacher_temp,dim=-1)
+            q2 = F.softmax((t_output2 - self.center)/self.teacher_temp,dim=-1)
+            t_output = (t_output1 + t_output2)/2
+            q1 = (q1 + q2)/2
+            q2 = q1
+            self.update_center(t_output) # warn: this is at the end in dino
+            # k1 = logit1.detach()/self.teacher_temp
+            # k2 = logit2.detach()/self.teacher_temp
+            # self.update_center(torch.cat([k1,k2]))
+            # q1 = q2 = F.softmax((k1 + k2 - 2*self.center)/2,1)            
 
         loss = (
-            torch.sum(- pk1 * F.log_softmax(q2,dim=1),-1) + 
-            torch.sum(- pk2 * F.log_softmax(q1,dim=1),-1)
+            torch.sum(- q1 * F.log_softmax(logit2/self.student_temp,dim=-1),-1) + 
+            torch.sum(- q2 * F.log_softmax(logit1/self.student_temp,dim=-1),-1)
         ).mean()/2
 
         loss_local = 0
         for lx in local_x:
-            lz = self.student(lx)/self.student_temp
+            lz = self.student(lx)
 
             loss_local += (
-                torch.sum(- pk1 * F.log_softmax(lz),-1) + 
-                torch.sum(- pk2 * F.log_softmax(lz),-1)
+                torch.sum(- q1 * F.log_softmax(lz/self.student_temp),-1) + 
+                torch.sum(- q2 * F.log_softmax(lz/self.student_temp),-1)
             ).mean()/2
 
-        self.log = {
-            "loss":loss.item(),
-            "loss_local":loss_local if loss_local==0 else loss_local.item() 
-        }
-        self.update_center(torch.cat([k1,k2]))
+
+        p1 = F.softmax(logit1/self.student_temp,dim=-1)
+        p2 = F.softmax(logit2/self.student_temp,dim=-1)
+        K = (p2.shape[1])
+        # CE = q(z) * log(q(z|x)) = H(z) - KL(q(z)||q(z|x)), KL(q(z)||q(z|x)) > H(q(z|x))
+        # minimizing CE causes collapse H(Z) -> 0 and reduce the MI(Z,X)
+        self.log['z_ce'] = - (p1 * torch.log(p2)).sum(-1).mean().item()
+        self.log['H_zcx'] = - (p1 * torch.log(p1)).sum(-1).mean().item()
+        # self.log['MI'] =  - (q1 * torch.log(p1)).sum(-1).mean().item()
+        
         return loss,self.log
     

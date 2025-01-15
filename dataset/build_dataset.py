@@ -1,6 +1,5 @@
 from torchvision import datasets
-from dataset.multiloader import MultiLoader, OrderOption
-from ffcv.loader import Loader
+
 import numpy as np
 import torch
 import gin
@@ -131,6 +130,7 @@ def build_dataset(args,transform_fn=SimpleAugmentation,cached=False):
         else:
             dataset_train = datasets.ImageFolder(os.path.join(args.data_path, 'train'), transform=transform_train)
     elif args.data_set == 'ffcv':
+        from dataset.multiloader import MultiLoader, OrderOption
         order = OrderOption.RANDOM if args.distributed else OrderOption.QUASI_RANDOM
         dataset_train =  MultiLoader(args.data_path, pipelines=transform_train,
                             batch_size=args.batch_size, num_workers=args.num_workers,

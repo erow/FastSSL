@@ -35,8 +35,8 @@ from torch import nn
 import torchvision.transforms as transforms
 import gin
 import timm
-from .operation import *
-from .backbone import create_backbone
+from layers.operation import *
+from layers.backbone import create_backbone
 
 @gin.configurable
 class SimCLR(nn.Module):

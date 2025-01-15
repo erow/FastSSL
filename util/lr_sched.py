@@ -19,3 +19,8 @@ def adjust_learning_rate(optimizer, epoch, args):
         else:
             param_group["lr"] = lr
     return lr
+
+def adjust_moco_momentum(epoch, args):
+    """Adjust moco momentum based on current epoch"""
+    m = 1. - 0.5 * (1. + math.cos(math.pi * epoch / args.epochs)) * (1. - args.m)
+    return m

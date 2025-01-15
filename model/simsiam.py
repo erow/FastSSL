@@ -26,48 +26,63 @@ The paper uses SGD to optimize the model.
 import torch
 from torch import nn
 import gin
-import timm
-from .operation import *
+import torch.nn.functional as F
+from layers.backbone import create_backbone
+
 
 
 @gin.configurable
 class SimSiam(nn.Module):
-    def __init__(self, backbone='resnet50', 
-                 out_dim=2048,
-                 hidden_dim=2048,
+    """warning: the model is not stable. The loss oscillates. """
+    def __init__(self, 
+                 embed_dim = 2048,
+                 proj_dim=2048,
                  mlp_dim=512):
         super(SimSiam, self).__init__()
-        self.embed_dim = out_dim
-        backbone = timm.create_model(backbone, num_classes=hidden_dim)
-        projector = build_mlp(2,hidden_dim,hidden_dim,out_dim)
-        self.backbone = nn.Sequential(backbone,
-                                      nn.BatchNorm1d(hidden_dim), nn.ReLU(),
-                                      projector)
-        self.predictor = build_mlp(2, out_dim, mlp_dim, out_dim, False)
-
+        backbone = create_backbone()
+        self.embed_dim = embed_dim
+        self.backbone = backbone
+        
+        self.projector = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim, bias=False),
+            nn.BatchNorm1d(embed_dim),
+            nn.ReLU(inplace=True), # first layer
+            nn.Linear(embed_dim, embed_dim, bias=False),
+            nn.BatchNorm1d(embed_dim),
+            nn.ReLU(inplace=True), # second layer
+            nn.Linear(embed_dim, embed_dim,bias=False),
+            nn.BatchNorm1d(proj_dim, affine=False),
+        )
+        
+        self.predictor = nn.Sequential(
+            nn.Linear(proj_dim, mlp_dim, bias=False),
+            nn.BatchNorm1d(mlp_dim),
+            nn.ReLU(inplace=True), # hidden layer
+            nn.Linear(mlp_dim, proj_dim)) # output layer
         self.criterion = nn.CosineSimilarity(dim=1)
 
+    @torch.no_grad()
     def representation(self, x):
         if isinstance(x, list) or isinstance(x, tuple):
             x = x[0]
-        x = self.backbone(x)
-        return x
+        latent = self.backbone(x)
+        proj = self.projector(latent)
+        pred = self.predictor(proj)
+        return dict(latent=latent,proj=proj,pred=pred)
     
-    def update(self):
-        pass
 
     def forward(self, samples, **kwargs):
         self.log = {}
         x1,x2 = samples[:2]
         local_x = samples[2:]
 
-        z1 = self.backbone(x1)
-        p1 = self.predictor(z1)
+        z1 = self.projector(self.backbone(x1))
+        z2 = self.projector(self.backbone(x2))
 
-        z2 = self.backbone(x2)
+        p1 = self.predictor(z1)
         p2 = self.predictor(z2)
         
-        loss = 1 - (self.criterion(p1, z2.detach()).mean() + 
+        loss =  1 - (self.criterion(p1, z2.detach()).mean() + 
                      self.criterion(p2, z1.detach()).mean()) * 0.5
 
         loss_local = 0
@@ -80,9 +95,11 @@ class SimSiam(nn.Module):
                 self.criterion(lp,z1.detach()) 
             ).mean()/2
 
-        self.log = {
-            "loss":loss.item(),
-            "loss_local":loss_local if loss_local==0 else loss_local.item() 
-        }
-        return loss + loss_local, self.log
+        self.log["loss"] = loss.item()
+        self.log['qk@sim'] = self.criterion(p1.detach(), z1.detach()).mean().item()
+        with torch.no_grad():
+            
+            self.log['qk@sim'] = F.cosine_similarity(p1,z1).mean().item()
+            self.log['z@sim'] = F.cosine_similarity(p1,z2).mean().item()
+        return loss, self.log
         
