@@ -119,8 +119,10 @@ class H5File():
 
 
 @gin.configurable(denylist=["args"])
-def build_dataset(args,transform_fn=SimpleAugmentation,cached=False):
-    transform_train = transform_fn()
+def build_dataset(args,transform_fn=SimpleAugmentation,
+                  mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225],
+                  cached=False):
+    transform_train = transform_fn(mean=mean,std=std)
     args.data_set = args.data_set.lower()
     if args.data_set == 'imnet':
         # simple augmentation

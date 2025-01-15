@@ -15,7 +15,8 @@ import torch.backends.cudnn as cudnn
 from PIL import Image  # a trick to solve loading lib problem
 from torch.utils.tensorboard import SummaryWriter
 
-from util.prob import LinearProb, build_representations_fn
+import timm
+
 
 assert timm.__version__ >= "0.6.12"  # version check
 import importlib
@@ -81,8 +82,9 @@ def get_args_parser():
                         help='epochs to warmup LR')
 
     # Dataset parameters
-    parser.add_argument('--data_set', default='ffcv')
-    parser.add_argument('--data_path', default=os.getenv("IMAGENET_DIR"), type=str,
+    parser.add_argument('--num_classes', default=1000, type=int,)
+    parser.add_argument('--data_set', default='imnet', help='dataset name, one of {imnet, ffcv, cifar10}')
+    parser.add_argument('--data_path', default='/datasets01/imagenet_full_size/061417/', type=str,
                         help='dataset path')
 
     parser.add_argument('--output_dir', default=None, type=str,
@@ -160,8 +162,7 @@ def train_one_epoch(model, online_prob,
 
         if not math.isfinite(loss_value):
             print("Loss is {}, stopping training".format(loss_value))
-            with torch.cuda.amp.autocast():
-                loss, log = model(samples,targets=targets, epoch=epoch)
+            torch.save(model.module, "nan_model.pt")
             sys.exit(1)
 
         loss /= accum_iter
@@ -172,11 +173,12 @@ def train_one_epoch(model, online_prob,
             
             model.module.update()
                 
-            if online_prob:
-                with torch.cuda.amp.autocast():
-                    log.update(online_prob.step(samples,targets))
-                for k,v in log.items():
-                    metric_logger.update(**{k:v})
+            # if online_prob:
+            #     rep = model.module.representation(samples)
+            #     assignments = online_prob.push(rep['latent'].detach().cpu().numpy())
+            #     if assignments is not None:
+            #         nmi = evaluate_clustering(assignments, targets.cpu().numpy())
+            #         metric_logger.update(nmi=nmi)
 
         torch.cuda.synchronize()
 
@@ -206,7 +208,18 @@ def train_one_epoch(model, online_prob,
     print("Averaged stats:", metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
-import torch
+class MultipleOptimizer(torch.nn.Module):
+    def __init__(self, *op):
+        self.optimizers = op
+        self.param_groups = self.optimizers[0].param_groups
+
+    def zero_grad(self):
+        for op in self.optimizers:
+            op.zero_grad()
+
+    def step(self):
+        for op in self.optimizers:
+            op.step()
 
 def main(args):
     misc.init_distributed_mode(args)
@@ -288,7 +301,8 @@ def train(args, data_loader_train,model):
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print("Number of parameters: %f M" % (num_params/1e6))
 
-    eff_batch_size = args.batch_size * args.accum_iter * misc.get_world_size()
+    eff_batch_size = args.batch_size * args.accum_iter 
+    args.batch_size = args.batch_size // misc.get_world_size()
     
     if args.lr is None:  # only base_lr is specified
         args.lr = args.blr * eff_batch_size / 256
@@ -305,7 +319,27 @@ def train(args, data_loader_train,model):
     
     # following timm: set wd as 0 for bias and norm layers
     param_groups = optim_factory.param_groups_weight_decay(model_without_ddp, args.weight_decay)
-    optimizer = timm.optim.create_optimizer(args, param_groups)
+    if args.opt == 'lion':
+        from lion_pytorch import Lion
+        optimizer = Lion(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    elif args.opt == 'lion1':
+        from lion_pytorch import Lion
+        lion_params = []
+        sgd_params = []
+        for name, param in model.named_parameters():
+            if 'predictor' in name or 'head' in name:
+                sgd_params.append(param)
+            elif param.ndim < 2:
+                sgd_params.append(param)
+            else:
+                lion_params.append(param)
+            
+        optimizer1 = Lion(lion_params, lr=args.lr, weight_decay=args.weight_decay)
+        optimizer2 = torch.optim.SGD(sgd_params,0.001)
+        optimizer = MultipleOptimizer(optimizer1,optimizer2)
+
+    else:
+        optimizer = timm.optim.create_optimizer(args, param_groups)
     print(optimizer)
     loss_scaler = NativeScaler()
 
@@ -316,13 +350,29 @@ def train(args, data_loader_train,model):
     if args.resume: print("Found checkpoint at %s" % args.resume)
     misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
 
-    print(f"Start training for {args.epochs} epochs")    
+    print(f"Start training for {args.epochs} epochs")
+    
+    if global_rank == 0 and args.output_dir is not None:
+        args.log_dir = os.path.join(args.output_dir, 'log')
+        os.makedirs(args.log_dir, exist_ok=True)
+        # log with wandb
+        open(output_dir/"config.gin",'w').write(gin.operative_config_str(),)
+        if not args.no_wandb:
+            import wandb
+            wandb.init(dir=args.log_dir,config=args.__dict__,sync_tensorboard=True,resume=False if args.resume is None else True , job_type='train')
+            wandb.save(os.path.join(args.output_dir, 'config.gin'),base_path=args.output_dir)
+        log_writer = SummaryWriter(log_dir=args.log_dir)
+    else:
+        log_writer = None
+
     
     start_time = time.time()
-
-    names, representations_fn = build_representations_fn(model_without_ddp)
-    online_prob = LinearProb(args.prob_path, names, representations_fn, num_classes=1000,
-        ).to(device) if args.prob_path else None
+    if args.online_prob:
+        from util.clustering import StreamingKmeans        
+        online_prob = StreamingKmeans(num_clusters=args.num_classes) 
+    else:
+        online_prob = None
+        
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed and args.data_set != "ffcv":
             data_loader_train.sampler.set_epoch(epoch)

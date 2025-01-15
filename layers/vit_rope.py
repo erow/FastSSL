@@ -14,7 +14,6 @@ from timm.models.vision_transformer import Mlp, PatchEmbed , _cfg
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 from timm.models.registry import register_model
 
-# from deit.models_v2 import vit_models, Layer_scale_init_Block, Attention
 from timm.models.vision_transformer import Attention, Block, VisionTransformer
 Layer_scale_init_Block = partial(Block, init_values=1e-4)
 

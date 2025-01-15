@@ -14,30 +14,16 @@ IMAGENET_MEAN = np.array([0.485, 0.456, 0.406]) * 255
 IMAGENET_STD = np.array([0.229, 0.224, 0.225]) * 255
 
 @gin.configurable
-def SimplePipeline(img_size=224,scale=(0.2,1), ratio=(3.0/4.0, 4.0/3.0),device='cuda'):
-    device = torch.device(device)
+def SimplePipeline(img_size=224,scale=(0.2,1), ratio=(3.0/4.0, 4.0/3.0),
+                 mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]):
     image_pipeline = [
             RandomResizedCropRGBImageDecoder((img_size, img_size), scale=scale,ratio=ratio,),
-            RandomHorizontalFlip(),          
-            NormalizeImage(IMAGENET_MEAN, IMAGENET_STD, np.float32),  
-            ToTensor(),  ToTorchImage(),
-            ]
-    label_pipeline = [IntDecoder(), ToTensor(),ToDevice(device), View(-1)]
-    # Pipeline for each data field
-    pipelines = {
-        'image': image_pipeline,
-        'label': label_pipeline
-    } 
-    return pipelines    
-
-@gin.configurable
-def ValPipeline(img_size=224,ratio= 224/256,device='cuda'):
-    device = torch.device(device)
-    image_pipeline = [
-            CenterCropRGBImageDecoder((img_size, img_size), ratio),
-            NormalizeImage(IMAGENET_MEAN, IMAGENET_STD, np.float32),
-            ToTensor(),  ToTorchImage(),
-            ToDevice(device),
+            RandomHorizontalFlip(),            
+            ToTensor(), 
+            ToDevice(torch.device('cuda')),
+            ToTorchImage(),
+            Convert(torch.float16),
+            Normalize(mean=[255*i for i in mean], std=[255*i for i in std], inplace=True),
             ]
     label_pipeline = [IntDecoder(), ToTensor(),ToDevice(device), View(-1)]
     # Pipeline for each data field
@@ -169,8 +155,11 @@ def MultiviewPipeline(img_size=224,scale=(0.4, 1.0),local_crops_number=0,
     return pipelines
 
 @gin.configurable
-def AsymviewPipeline(img_size=224,scale=(0.4, 1.0),local_crops_number=8,
-                      local_img_size=96,device='cuda'):
+def MultiviewPipeline(img_size=224,scale=(0.4, 1.0),local_crops_number=8,
+                      local_img_size=96,
+                      mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]):
+    mean=np.array(mean)*255
+    std = np.array(std)*255
     k = local_img_size/img_size
     local_scale=(scale[0]*k, scale[1]*k)
     

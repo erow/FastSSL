@@ -81,16 +81,12 @@ class DINO(nn.Module):
         self.center_momentum = center_momentum
         self.register_buffer("center", torch.zeros(1, out_dim))
         self.student_temp = student_temp
-        self.teacher_temp = teacher_temp
+        self.teacher_temp = teacher_temp # TODO: adjust the temperature dynamically for the teacher
 
         # build encoders
         backbone = create_backbone()        
         projector = DINOHead(embed_dim, out_dim)
-        projector.last_layer.requires_grad_(False)
-        u,s,v = torch.linalg.svd(torch.rand(out_dim,out_dim))
-        ortho = u @ v.T
-        v=projector.last_layer.weight_v
-        v.data[:] = ortho[:,:v.shape[1]]
+        
         self.embed_dim = embed_dim
         self.student = nn.Sequential(backbone,projector)
         
@@ -120,7 +116,7 @@ class DINO(nn.Module):
     @torch.no_grad()
     def update(self,m):
         for ema_v, model_v in zip(self._teacher.state_dict().values(), self.student.state_dict().values()):
-            ema_v.copy_(m * model_v + (1.0 - m) * ema_v)
+            ema_v.data.mul_(m).add_((1 - m) * model_v.detach().data)
 
     def representation(self, x):
         if isinstance(x, list) or isinstance(x, tuple):
@@ -142,23 +138,18 @@ class DINO(nn.Module):
         x1, x2 = imgs[:2]
         local_x = imgs[2:]
 
-        # compute features
+        # predict the distribution of clusters
         logit1 = self.student(x1)
         logit2 = self.student(x2)
         
         with torch.no_grad():
             t_output1 = self.teacher(x1)
             t_output2 = self.teacher(x2)
+            # teacher centering and sharpening
             q1 = F.softmax((t_output1 - self.center)/self.teacher_temp,dim=-1)
             q2 = F.softmax((t_output2 - self.center)/self.teacher_temp,dim=-1)
             t_output = (t_output1 + t_output2)/2
-            q1 = (q1 + q2)/2
-            q2 = q1
-            self.update_center(t_output) # warn: this is at the end in dino
-            # k1 = logit1.detach()/self.teacher_temp
-            # k2 = logit2.detach()/self.teacher_temp
-            # self.update_center(torch.cat([k1,k2]))
-            # q1 = q2 = F.softmax((k1 + k2 - 2*self.center)/2,1)            
+            self.update_center(t_output)         
 
         loss = (
             torch.sum(- q1 * F.log_softmax(logit2/self.student_temp,dim=-1),-1) + 
@@ -178,6 +169,7 @@ class DINO(nn.Module):
         p1 = F.softmax(logit1/self.student_temp,dim=-1)
         p2 = F.softmax(logit2/self.student_temp,dim=-1)
         K = (p2.shape[1])
+        
         # CE = q(z) * log(q(z|x)) = H(z) - KL(q(z)||q(z|x)), KL(q(z)||q(z|x)) > H(q(z|x))
         # minimizing CE causes collapse H(Z) -> 0 and reduce the MI(Z,X)
         self.log['z_ce'] = - (p1 * torch.log(p2)).sum(-1).mean().item()

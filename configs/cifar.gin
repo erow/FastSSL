@@ -1,3 +1,5 @@
 build_dataset.transform_fn=@DataAugmentationDINO
+build_dataset.mean=(0.4914, 0.4822, 0.4465)
+build_dataset.std=(0.2470, 0.2435, 0.2616)
 DataAugmentationDINO.img_size=32
 DataAugmentationDINO.local_crops_number=0

@@ -12,7 +12,7 @@ ResNet50
 
 
 ## network
-MoCo v3 consists of backbone $f(\cdot)$, projector $f_q(\cdot)$, predictor $f_k(\cdot)$, and their momentum version, where projector is updated by EMA, predictor is learnable. 
+MoCo v3 consists of backbone $f(*)$, projector $f_q(*)$, predictor $f_k(*)$, and their momentum version, where projector is updated by EMA, predictor is learnable. 
 
 q = f_q(f_k(f(x))), k =g_k(g(x)).
 

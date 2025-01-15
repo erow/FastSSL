@@ -73,7 +73,8 @@ class Solarization(nn.Module):
 
 @gin.configurable()
 class SimpleAugmentation(nn.Module):
-    def __init__(self,img_size=224,scale=(0.2, 1.0),):
+    def __init__(self,img_size=224,scale=(0.2, 1.0),
+                 mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]):
         super().__init__()
          # simple augmentation
         self.transforms = Compose([
@@ -81,7 +82,7 @@ class SimpleAugmentation(nn.Module):
                 RandomHorizontalFlip(),
                 ToTensor(),
                 # ToDevice('cuda'),
-                Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
+                Normalize(mean=mean,std=std)])
     def forward(self,x):
         return self.transforms(x)
     
@@ -92,9 +93,9 @@ class SimpleAugmentation(nn.Module):
 
 @gin.configurable()
 class DataAugmentationDINO(nn.Module):
-    def __init__(self,img_size=224, global_crops_scale=(0.4, 1.), local_crops_scale=(0.05, 0.4), local_crops_number=8):
-        """Multi-view data augmentation
-        Reference: https://github.com/facebookresearch/dino/blob/main/main_dino.py#L419
+    def __init__(self,img_size=224, global_crops_scale=(0.4, 1.), local_crops_scale=(0.05, 0.4), local_crops_number=8, color_jitter=True,
+                 mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]):
+        """Multi-view data augmentation.
 
         Args:
             global_crops_scale (tuple, optional): _description_. Defaults to (0.4, 1.).
@@ -116,7 +117,8 @@ class DataAugmentationDINO(nn.Module):
 
         normalize = Compose([
             ToTensor(),
-            Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+            # ToDevice('cuda'),
+            Normalize(mean, std),
         ])
 
         # first global crop
