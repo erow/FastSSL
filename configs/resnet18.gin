@@ -1,0 +1,3 @@
+create_backbone.name='resnet18'
+create_backbone.output_stride=8
+create_backbone.stem_type='deep'

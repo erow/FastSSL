@@ -1,38 +1,32 @@
-# Install
+# Toward Training Self-supervised Models with Limited Budget
 
+This repository focuses on enabling efficient training for self-supervised learning (SSL). Often referred to as the "dark matter" of intelligence, SSL empowers AI systems to learn without supervision, drawing insights from their environments in ways reminiscent of human learning. While numerous advanced SSL algorithms have been proposed, many achieving state-of-the-art (SOTA) results, their adoption is often hindered by prohibitively high training costs. This limitation stifles innovation from academia and individual researchers. Designed to be beginner-friendly, this repository allows users to reproduce SSL algorithms and perform fast validation for new ideas. Here are key features:
+- Efficient data loading with [ffcv](https://github.com/erow/ffcv).
+- Flexible configuration with [gin-config](docs/config.md).
+- A collection of SSL algorithms.
+- Evaluation with [vitookit](https://github.com/erow/vitookit).
+- All models are available at [WANDB](https://wandb.ai/erow/FastSSL).
+- A [guideline](docs/smalldata.md) of training SSL models on CIFAR10 in a few minutes!.
+
+# Environment Setup
+
+Create a new environment with conda or micromamba:
 ```bash
-conda create -y -n  FastSSL python=3.10 cupy pkg-config libjpeg-turbo=3.0.0 opencv numba  pytorch torchvision pytorch-cuda=12.1 -c pytorch -c nvidia -c conda-forge 
+conda create -y -n FastSSL python=3.10 cupy pkg-config 'libjpeg-turbo=3.0.0' opencv numba  pytorch torchvision pytorch-cuda=12.1 -c pytorch -c nvidia -c conda-forge 
 conda activate FastSSL
-conda install 
 pip install -r requirements.txt
 ```
-
-# build dataset
-
-Create FFCV data by  
-
-```bash
-python dataset/write_dataset.py \
-    --cfg.dataset=imagenet \
-    --cfg.write_mode=jpg \
-    --cfg.jpeg_quality=95 --cfg.max_resolution=500 \
-    --cfg.data_dir=$IMAGENET_DIR/train \
-    --cfg.write_path=$write_path 
+Or, you can use a docker image to ensure everything is the same with mine from [Github Package](https://github.com/erow/aisurrey-docker)
 ```
-Or run `bin/build_data.sh` to build the datasets.
+docker pull ghcr.io/erow/aisurrey-docker:sha256-d835a01e444257345d78c95cec157eb604a73935f70f9e7928cdd08d97411fa7.sig
+```
 
-Regarding to loading ffcv datasets, please refer to [ffcv](https://docs.ffcv.io/parameter_tuning.html).
-Use `FFCV_DEFAULT_CACHE_PROCESS=0` to enable cache process.
-
-Before training, run `python bin/benchmark_data.py --data_path=<*.ffcv>` to check the data loading speed.
-
-# Train
+# Usage
 
 ## torchrun
 
-Run command
-
-```bash
+To train a MAE, you can run the following command
+```bash 
 torchrun --nproc_per_node 8 main_pretrain.py  --data_path=${train_path} --data_set=ffcv \
     --epochs 800 --warmup_epochs 40 --blr 1.5e-4 --weight_decay 0.05 --batch_size 512\
     --cfgs configs/mae_ffcv.gin --gin build_model.model_fn=@base/MaskedAutoencoderViT build_dataset.transform_fn=@SimplePipeline  --ckpt_freq=100 --output_dir outputs/IN1K_base 
@@ -53,30 +47,19 @@ WANDB_NAME=mae_1k python submitit_pretrain.py \
     --warmup_epochs 40 \
     --blr 1.5e-4 --weight_decay 0.05 \
     --cfgs configs/mae_ffcv.gin --gin build_model.model_fn=@base/MaskedAutoencoderViT build_dataset.transform_fn=@SimplePipeline \
-    --data_path=${train_path} --data_set=ffcv --online_prob --dynamic_resolution 
+    --data_path=${train_path} --data_set=ffcv 
 ```
 
-## Progresive Training
+# Cite Me!
 
-```bash
-WANDB_TAGS=dres WANDB_NAME=mae_s1  python submitit_pretrain.py -p long --data_path=${train_path} --data_set=ffcv \
-     --epochs 800 --warmup_epochs 40 --blr 1.5e-4 --weight_decay 0.05 --batch_size 128 --accum_iter=4 \
-     --cfgs configs/mae_ffcv.gin --gin build_model.model_fn=@base/MaskedAutoencoderViT build_dataset.transform_fn=@SimplePipeline DynamicMasking.start_ramp=0 DynamicMasking.end_ramp=400 DynamicMasking.scheme=1   \
-     --ckpt_freq=100 --online_prob --dynamic_resolution 
-
+```bib
+@misc{wu2024dailymaepretrainingmaskedautoencoders,
+      title={DailyMAE: Towards Pretraining Masked Autoencoders in One Day}, 
+      author={Jiantao Wu and Shentong Mo and Sara Atito and Zhenhua Feng and Josef Kittler and Muhammad Awais},
+      year={2024},
+      eprint={2404.00509},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG},
+      url={https://arxiv.org/abs/2404.00509}, 
+}
 ```
-
-
-# Tracking
-We use [wandb](https://wandb.ai/) to track the training processes.
-
-# Advanced Usage
-
-
-## configure 
-
-[gin](https://github.com/google/gin-config) is utilized to configure the hyperparameters for models. The programe accepts configure files and key=value pairs to overwrite the hyperparameters by passing arguments `--cfgs *.gin --gin k=v`. 
-The main also accepts parameters, like `--batch_size`, `--epochs`, `--data_path`, `--data_set`, `--output_dir`, to control the training process. 
-
-## data
-Use ffcv loader by passing `--data_set=ffcv` or pytorch dataloader by passing `--data_set=IMNET`.

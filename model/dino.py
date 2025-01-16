@@ -18,10 +18,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributed as dist
 import gin
-from timm.models import create_model
-import timm
-import numpy as np
-from timm.utils import ModelEmaV2
 from timm.layers import trunc_normal_
 
 from layers.backbone import create_backbone

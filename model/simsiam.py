@@ -5,13 +5,14 @@ reference: https://github.com/facebookresearch/simsiam
 We apply cosine decay for lr to predictor, whereas, removing it gains improvement.
 The paper uses SGD to optimize the model. 
 
+Warning: Not working with ViT.
 
 # keypoints
 - break symmetry
 - Stop-gradient: the key to avoid collapse.
-- Predictor: the key to converge. The loss remains high if removing the predictor. 2048-512-2048, no BN. The bottleneck instead of inverse bottleneck is vital for simsiam.
+- Predictor: the key to converge. The loss remains high if removing the predictor. 2048-512-2048, no BN. The bottleneck instead of inverse bottleneck is vital for simsiam. The bottleneck prevents the predictor learning identity map, avoiding collapse.
 - projector: Use BN at the end. 2048-2048-2048.
-- BN: dding BN to the hidden layers is vital to the success of learning semantic representation. However, adding BN to the output of predictor will cause unstable training and the loss oscillates. 
+- BN: adding BN to the hidden layers is vital to the success of learning semantic representation. However, adding BN to the output of predictor will cause unstable training and the loss oscillates. 
 - Hypothesis: The presence of stop-gradient is the consequence of introducing the extra set of variables.
 
 
@@ -35,8 +36,8 @@ from layers.backbone import create_backbone
 class SimSiam(nn.Module):
     """warning: the model is not stable. The loss oscillates. """
     def __init__(self, 
-                 embed_dim = 2048,
-                 proj_dim=2048,
+                 proj_dim = 2048,
+                 embed_dim=2048,
                  mlp_dim=512):
         super(SimSiam, self).__init__()
         backbone = create_backbone()
@@ -50,15 +51,18 @@ class SimSiam(nn.Module):
             nn.Linear(embed_dim, embed_dim, bias=False),
             nn.BatchNorm1d(embed_dim),
             nn.ReLU(inplace=True), # second layer
-            nn.Linear(embed_dim, embed_dim,bias=False),
+            nn.Linear(embed_dim, proj_dim,bias=False), # output layer
             nn.BatchNorm1d(proj_dim, affine=False),
         )
+        
+
         
         self.predictor = nn.Sequential(
             nn.Linear(proj_dim, mlp_dim, bias=False),
             nn.BatchNorm1d(mlp_dim),
-            nn.ReLU(inplace=True), # hidden layer
-            nn.Linear(mlp_dim, proj_dim)) # output layer
+            nn.ReLU(), 
+            # nn.Softmax(), # simulate class centroid selection
+            nn.Linear(mlp_dim, proj_dim)) # output layer        
         self.criterion = nn.CosineSimilarity(dim=1)
 
     @torch.no_grad()

@@ -237,6 +237,10 @@ def main(args):
     
     num_tasks = misc.get_world_size()
     global_rank = misc.get_rank()
+
+    eff_batch_size = args.batch_size * args.accum_iter 
+    args.batch_size = args.batch_size // misc.get_world_size()
+    
     if args.data_set != "ffcv":
         sampler_train = torch.utils.data.DistributedSampler(
             dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=True
@@ -301,8 +305,6 @@ def train(args, data_loader_train,model):
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print("Number of parameters: %f M" % (num_params/1e6))
 
-    eff_batch_size = args.batch_size * args.accum_iter 
-    args.batch_size = args.batch_size // misc.get_world_size()
     
     if args.lr is None:  # only base_lr is specified
         args.lr = args.blr * eff_batch_size / 256
@@ -322,21 +324,23 @@ def train(args, data_loader_train,model):
     if args.opt == 'lion':
         from lion_pytorch import Lion
         optimizer = Lion(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    elif args.opt == 'lion1':
-        from lion_pytorch import Lion
-        lion_params = []
-        sgd_params = []
+    elif args.opt == 'muon':
+        from muon import Muon
+        muon_params = []
+        adamw_params = []
         for name, param in model.named_parameters():
             if 'predictor' in name or 'head' in name:
-                sgd_params.append(param)
+                adamw_params.append(param)
+            elif 'embed' in name:
+                adamw_params.append(param)
             elif param.ndim < 2:
-                sgd_params.append(param)
+                adamw_params.append(param)
             else:
-                lion_params.append(param)
+                # Find ≥2D parameters in the body of the network  for Muon
+                muon_params.append(param)
             
-        optimizer1 = Lion(lion_params, lr=args.lr, weight_decay=args.weight_decay)
-        optimizer2 = torch.optim.SGD(sgd_params,0.001)
-        optimizer = MultipleOptimizer(optimizer1,optimizer2)
+        optimizer = Muon(muon_params, lr=0.02, momentum=0.95,
+                 adamw_params=adamw_params, adamw_lr=3e-4, adamw_betas=(0.90, 0.95), adamw_wd=0.01)
 
     else:
         optimizer = timm.optim.create_optimizer(args, param_groups)

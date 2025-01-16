@@ -38,7 +38,7 @@
                 "--batch_size=20", "--opt=adamw", "--blr=5e-4", "--epochs=100", 
                 "--data_path=../data/", "--data_set=cifar10",
                 "--cfgs", "${workspaceFolder}/configs/cifar.gin", 
-                "--gin", "build_model.model_fn=@amae_tiny", "build_model.patch_size=4", "build_model.img_size=32",
+                "--gin", "build_dataset.transform_fn=@SimpleAugmentation", "SimpleAugmentation.img_size=32", "build_model.model_fn=@amae_tiny", "build_model.patch_size=4", "build_model.img_size=32", "build_model.decoder_patch_size=2"
             ],
         }
     ]
