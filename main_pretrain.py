@@ -14,8 +14,10 @@ import torch
 import torch.backends.cudnn as cudnn
 from PIL import Image  # a trick to solve loading lib problem
 from torch.utils.tensorboard import SummaryWriter
-
+from util import misc
 import timm
+
+from util.helper import aug_parse
 
 
 assert timm.__version__ >= "0.6.12"  # version check
@@ -32,12 +34,7 @@ from layers.build_model import build_model
 from dataset.build_dataset import build_dataset
 
 from typing import Iterable
-
-from dataset.build_dataset import build_dataset
 from util.dres import DynamicMasking
-
-import dataset.ffcv_transform
-import model.load
 
 def get_args_parser():
     parser = argparse.ArgumentParser('Fast Self-supervised Learning', add_help=False)
@@ -51,6 +48,7 @@ def get_args_parser():
     parser.add_argument('--no_backup',action='store_false', dest='backup')
     parser.add_argument("--no_wandb", default=False, action="store_true", help="Use wandb for logging.")
     parser.add_argument("--dynamic_resolution", default=False, action="store_true", help="Use dynamic resolution.")
+    parser.add_argument("--online_prob", default=False, action='store_true')
     
     # Model parameters
     parser.add_argument('--prob_path', default=None, help="The path of IF or ffcv.")
@@ -169,10 +167,8 @@ def train_one_epoch(model, online_prob,
         loss_scaler(loss, optimizer, parameters=model.parameters(),
                     update_grad=(data_iter_step + 1) % accum_iter == 0)
         if (data_iter_step + 1) % accum_iter == 0:
-            optimizer.zero_grad()
-            
-            model.module.update()
-                
+            optimizer.zero_grad()            
+                            
             # if online_prob:
             #     rep = model.module.representation(samples)
             #     assignments = online_prob.push(rep['latent'].detach().cpu().numpy())
@@ -238,7 +234,7 @@ def main(args):
     num_tasks = misc.get_world_size()
     global_rank = misc.get_rank()
 
-    eff_batch_size = args.batch_size * args.accum_iter 
+    args.eff_batch_size = args.batch_size * args.accum_iter 
     args.batch_size = args.batch_size // misc.get_world_size()
     
     if args.data_set != "ffcv":
@@ -259,7 +255,7 @@ def main(args):
     # initialize model
     model = build_model(args)
     if args.pretrained_weights:
-        load_pretrained_weights(model.visual, args.pretrained_weights)
+        misc.load_pretrained_weights(model.visual, args.pretrained_weights)
     if args.compile:
         model = torch.compile(model)
 
@@ -286,9 +282,6 @@ def train(args, data_loader_train,model):
     else:
         log_writer = None
 
-    if args.syncBN:
-        model = convert_sync_batchnorm(model)
-
     if args.dynamic_resolution:
         import torch._dynamo
         from model.dres import DynamicMasking
@@ -307,13 +300,13 @@ def train(args, data_loader_train,model):
 
     
     if args.lr is None:  # only base_lr is specified
-        args.lr = args.blr * eff_batch_size / 256
+        args.lr = args.blr * args.eff_batch_size / 256
 
-    print("base lr: %.2e" % (args.lr * 256 / eff_batch_size))
+    print("base lr: %.2e" % (args.lr * 256 / args.eff_batch_size))
     print("actual lr: %.2e" % args.lr)
 
     print("accumulate grad iterations: %d" % args.accum_iter)
-    print("effective batch size: %d" % eff_batch_size)
+    print("effective batch size: %d" % args.eff_batch_size)
 
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
@@ -345,7 +338,7 @@ def train(args, data_loader_train,model):
     else:
         optimizer = timm.optim.create_optimizer(args, param_groups)
     print(optimizer)
-    loss_scaler = NativeScaler()
+    loss_scaler = misc.NativeScalerWithGradNormCount()
 
     if args.resume is None:
         if args.output_dir and os.path.isfile(os.path.join(args.output_dir, "checkpoint.pth")):

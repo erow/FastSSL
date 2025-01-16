@@ -2,12 +2,6 @@ import argparse, os
 from pathlib import Path
 import gin
 
-@gin.configurable()
-def build_model(args,model_fn=gin.REQUIRED):
-    model = model_fn()
-    return model
-
-
 def aug_parse(parser: argparse.ArgumentParser):
     import yaml
     parser.add_argument('--no_resume',default=False,action='store_true',help="")

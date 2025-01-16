@@ -29,7 +29,7 @@ WANDB_NAME=simclr-cifar10 torchrun main_pretrain.py --data_set cifar10 --data_pa
 Momentum contrastive learning is a simple contrastive learning framework that utilizes a momentum encoder to stabilize the training. We provide a simple implementation of MoCo in the `models/moco.py` file. You can run the following command to train the MoCo model on CIFAR10.
 
 ```bash
-WANDB_NAME=moco-cifar10 torchrun --master_port=12387  main_pretrain_ema.py --data_set cifar10 --data_path ../data/  --batch_size 512 --epochs=200 --warmup_epochs=10 --ckpt_freq 100 --opt lion --blr=1e-4  --cfgs configs/cifar.gin configs/vitt.gin --gin build_model.model_fn=@MoCo MoCo.embed_dim=192 MoCo.mlp_dim=512 MoCo.out_dir=128
+WANDB_NAME=moco-cifar10 torchrun --master_port=12387  main_pretrain_ema.py --data_set cifar10 --data_path ../data/  --batch_size 512 --epochs=200 --warmup_epochs=10 --ckpt_freq 100 --opt lion --blr=1e-4  --cfgs configs/cifar.gin configs/vitt.gin --gin build_model.model_fn=@MoCo MoCo.embed_dim=192 MoCo.mlp_dim=512 MoCo.out_dim=128
 ```
 
 ### DINO
