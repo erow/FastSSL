@@ -47,15 +47,14 @@ def train_one_epoch(model: torch.nn.Module,online_prob,
             lr_sched.adjust_learning_rate(optimizer, epoch_i, args)
             m = lr_sched.adjust_moco_momentum(epoch_i, args)        
             model.module.update(m)
-        with torch.cuda.amp.autocast():
+        with torch.amp.autocast('cuda',dtype=torch.float16):
             loss, log = model(samples,targets=targets, epoch=epoch)
 
         loss_value = loss.item()
 
         if not math.isfinite(loss_value):
             print("Loss is {}, stopping training".format(loss_value))
-            with torch.cuda.amp.autocast():
-                loss, log = model(samples,targets=targets, epoch=epoch)
+            torch.save(model.module, "nan_model.pt")
             sys.exit(1)
 
         loss /= accum_iter
@@ -65,10 +64,7 @@ def train_one_epoch(model: torch.nn.Module,online_prob,
             optimizer.zero_grad()            
                 
             if online_prob:
-                with torch.cuda.amp.autocast():
-                    log.update(online_prob.step(samples,targets))
-                for k,v in log.items():
-                    metric_logger.update(**{k:v})
+                log.update(online_prob.step(samples,targets))                
 
         torch.cuda.synchronize()
 
@@ -77,7 +73,8 @@ def train_one_epoch(model: torch.nn.Module,online_prob,
         lr = optimizer.param_groups[-1]["lr"]
         metric_logger.update(lr=lr)
         metric_logger.update(m=m)
-        
+        for k,v in log.items():
+            metric_logger.update(**{k:v})
         
 
         loss_value_reduce = misc.all_reduce_mean(loss_value)

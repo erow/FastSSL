@@ -57,6 +57,11 @@ WANDB_NAME=mae-cifar10 torchrun main_pretrain.py --data_set cifar10 --data_path 
 WANDB_NAME=amae-cifar10 torchrun main_pretrain.py --data_set cifar10 --data_path ../data/  --batch_size 512 --epochs=200 --warmup_epochs=10 --ckpt_freq 100 --opt lion --blr=1e-4  --cfgs configs/cifar.gin --gin build_dataset.transform_fn=@SimpleAugmentation SimpleAugmentation.img_size=32 build_model.model_fn=@amae_tiny build_model.patch_size=4 build_model.img_size=32 build_model.decoder_patch_size=2 build_model.sigma=20 
 ```
 
+### AIM
+
+```bash
+WANDB_NAME=aim-cifar10 torchrun --master_port 20953 --nproc_per_node=4 main_pretrain.py --data_set cifar10 --data_path ../data/ --batch_size 512 --epochs=200 --warmup_epochs=10 --ckpt_freq 100 --opt lion --blr=1e-4 --cfgs configs/cifar.gin --gin build_dataset.transform_fn=@SimpleAugmentation SimpleAugmentation.img_size=32 build_model.model_fn=@aim_tiny 
+```
 
 ## Evaluation
 

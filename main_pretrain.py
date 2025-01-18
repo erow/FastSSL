@@ -48,10 +48,9 @@ def get_args_parser():
     parser.add_argument('--no_backup',action='store_false', dest='backup')
     parser.add_argument("--no_wandb", default=False, action="store_true", help="Use wandb for logging.")
     parser.add_argument("--dynamic_resolution", default=False, action="store_true", help="Use dynamic resolution.")
-    parser.add_argument("--online_prob", default=False, action='store_true')
+    parser.add_argument("--prob", default=False, action='store_true')
     
     # Model parameters
-    parser.add_argument('--prob_path', default=None, help="The path of IF or ffcv.")
     parser.add_argument("--compile", default=False, action="store_true", help="Compile the module or not.")
     parser.add_argument("-w", "--pretrained_weights", default=None, type=str, help="Path to pretrained weights.")
 
@@ -153,7 +152,7 @@ def train_one_epoch(model, online_prob,
             lr_sched.adjust_learning_rate(optimizer, data_iter_step / len(data_loader) + epoch, args)
         
 
-        with torch.cuda.amp.autocast():
+        with torch.amp.autocast('cuda',dtype=torch.float16):
             loss, log = model(samples,targets=targets, epoch=epoch)
 
         loss_value = loss.item()
@@ -169,21 +168,17 @@ def train_one_epoch(model, online_prob,
         if (data_iter_step + 1) % accum_iter == 0:
             optimizer.zero_grad()            
                             
-            # if online_prob:
-            #     rep = model.module.representation(samples)
-            #     assignments = online_prob.push(rep['latent'].detach().cpu().numpy())
-            #     if assignments is not None:
-            #         nmi = evaluate_clustering(assignments, targets.cpu().numpy())
-            #         metric_logger.update(nmi=nmi)
+            if online_prob:
+                prob_log = online_prob.step(samples, targets)
+                log.update(prob_log)
 
         torch.cuda.synchronize()
 
+        lr = optimizer.param_groups[-1]["lr"]
         metric_logger.update(loss=loss_value)
+        metric_logger.update(lr=lr)
         for k,v in log.items():
             metric_logger.update(**{k:v})
-
-        lr = optimizer.param_groups[-1]["lr"]
-        metric_logger.update(lr=lr)
         
         
 
@@ -364,9 +359,10 @@ def train(args, data_loader_train,model):
 
     
     start_time = time.time()
-    if args.online_prob:
-        from util.clustering import StreamingKmeans        
-        online_prob = StreamingKmeans(num_clusters=args.num_classes) 
+    if args.prob and args.gpu == 0:
+        from util.clustering import KmeansProb        
+        online_prob = KmeansProb(model_without_ddp.representation,
+            num_clusters=args.num_classes) 
     else:
         online_prob = None
         
@@ -391,7 +387,7 @@ def train(args, data_loader_train,model):
             if args.backup:
                 misc.save_model(
                     args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
-                    loss_scaler=loss_scaler, epoch=epoch,backup=False)
+                    loss_scaler=loss_scaler, epoch=epoch,bac=False)
 
         log_stats = {**{f'train/{k}': v for k, v in train_stats.items()},
                         'epoch': epoch,}

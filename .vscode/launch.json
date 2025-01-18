@@ -40,6 +40,21 @@
                 "--cfgs", "${workspaceFolder}/configs/cifar.gin", 
                 "--gin", "build_dataset.transform_fn=@SimpleAugmentation", "SimpleAugmentation.img_size=32", "build_model.model_fn=@amae_tiny", "build_model.patch_size=4", "build_model.img_size=32", "build_model.decoder_patch_size=2"
             ],
+        },
+        {
+            "name": "aim",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "torch.distributed.launch",            
+            "console": "integratedTerminal",
+            "args": [
+                "--nproc_per_node=1",                
+                "${workspaceFolder}/main_pretrain.py",
+                "--batch_size=20", "--opt=adamw", "--blr=5e-4", "--epochs=100", 
+                "--data_path=../data/", "--data_set=cifar10",
+                "--cfgs", "${workspaceFolder}/configs/cifar.gin", 
+                "--gin", "build_dataset.transform_fn=@SimpleAugmentation", "SimpleAugmentation.img_size=32", "build_model.model_fn=@aim_tiny",
+            ],
         }
     ]
 }
