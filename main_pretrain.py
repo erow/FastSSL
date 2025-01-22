@@ -171,8 +171,8 @@ def train_one_epoch(model, online_prob,
             if online_prob:
                 prob_log = online_prob.step(samples, targets)
                 log.update(prob_log)
-
-        torch.cuda.synchronize()
+        if args.device == 'cuda':
+            torch.cuda.synchronize()
 
         lr = optimizer.param_groups[-1]["lr"]
         metric_logger.update(loss=loss_value)
@@ -303,9 +303,9 @@ def train(args, data_loader_train,model):
     print("accumulate grad iterations: %d" % args.accum_iter)
     print("effective batch size: %d" % args.eff_batch_size)
 
+    model_without_ddp = model
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
-        model_without_ddp = model.module
     
     # following timm: set wd as 0 for bias and norm layers
     param_groups = optim_factory.param_groups_weight_decay(model_without_ddp, args.weight_decay)

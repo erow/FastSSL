@@ -22,8 +22,8 @@
                 "${workspaceFolder}/main_pretrain.py",
                 "--batch_size=20", "--opt=adamw", "--blr=5e-4", "--epochs=100", 
                 "--data_path=../data/", "--data_set=cifar10",
-                "--cfgs", "configs/cifar10.gin", "configs/vitt.gin",
-                "--gin", "build_dataset.transform_fn=@DataAugmentationDINO", "build_model.model_fn=@SimCLR",
+                "--cfgs", "configs/cifar.gin", "configs/vitt.gin",
+                "--gin", "build_dataset.transform_fn=@DataAugmentationDINO", "build_model.model_fn=@SimCLR", "build_model.embed_dim=192"
             ],
         },
         {

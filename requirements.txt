@@ -3,10 +3,10 @@ torchvision
 torchmetrics>=1.2.1
 wandb
 gin-config
-numba
+# numba
 einops
 tensorboard==2.15.1
-timm==0.9.12
-submitit==1.5.1
+timm>=0.9.12
 scipy==1.12.0
+# submitit==1.5.1
 # ffcv@git+https://github.com/erow/ffcv.git

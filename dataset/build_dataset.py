@@ -10,7 +10,7 @@ from torchvision.datasets.folder import default_loader
 from typing import Any, Callable, cast, Dict, List, Optional, Tuple
 import os
 
-from dataset.cache_dataset import CacheDataset
+# from dataset.cache_dataset import CacheDataset
 
 from dataset.transform import SimpleAugmentation
 def find_classes(directory: str):
