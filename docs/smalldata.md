@@ -81,3 +81,6 @@ KNN for fast evaluation
 ```bash
 vitrun eval_knn.py --data_set CIFAR10 --data_location ../data/ --gin build_model.model_name=\'vit_tiny_patch16_224\' build_model.num_heads=12 build_model.patch_size=4 build_model.global_pool=\'avg\' build_model.img_size=32 --input_size=32  --prefix='<regex>' -w '<weight>'
 ```
+
+
+# VISION TRANSFORMERS IN 2022 AN UPDATE ON TINY IMAGENET : https://arxiv.org/pdf/2205.10660

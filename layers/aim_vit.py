@@ -398,19 +398,29 @@ class AttentionPoolingClassifier(nn.Module):
         return out
 
 class ReconstructionHead(nn.Module):
-    def __init__(self, dim, patch_size, type='mlp'):
+    def __init__(self, dim, patch_size, type='mlp',depth=6, width=2048):
         super().__init__()
         self.patch_size = patch_size
         self.type = type
         self.dim = dim
-        
-        self.mlp = MLP(dim, hidden_features=dim*4, out_features=3*patch_size*patch_size)
+        blocks = []
+        for i in range(depth-1):
+            if i ==0:
+                blocks.append(nn.Linear(dim, width))
+            else:
+                blocks.append(nn.Linear(width, width))
+            blocks.append(nn.ReLU())
+            blocks.append(nn.BatchNorm1d(width))
+            
+        blocks += [nn.Linear(width, 3*patch_size*patch_size)]
+        self.blocks = nn.Sequential(*blocks)
         self.norm = nn.Identity()
     
     def forward(self, x):
         B,L,D = x.shape
         
         x = self.norm(x)
-        x = self.mlp(x)
-        
+        x = x.reshape(B *L, D)
+        x = self.blocks(x)
+        x = x.reshape(B, L, -1)
         return x

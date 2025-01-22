@@ -82,7 +82,7 @@ class StreamingKMeans:
         """
         distances = torch.cdist(data, self.cluster_centers)
         return torch.argmin(distances, dim=1)
-
+from layers.operation import concat_all_gather
 class KmeansProb():
     def __init__(self, representation_fn, num_clusters=100):
         self.representation_fn = representation_fn
@@ -99,10 +99,15 @@ class KmeansProb():
         log = {}
         if isinstance(x, list) or isinstance(x, tuple):
             x = x[0]
-        for name, z in self.representation_fn(x).items():
+        
+        y = concat_all_gather(y.contiguous())
+        
+        for name, z in self.representation_fn(x).items():            
+            z = concat_all_gather(z.contiguous())
             if name not in self.kmeans_dict:
                 self.kmeans_dict[name] = StreamingKMeans(self.num_clusters)
-            assignments = self.kmeans_dict[name].update_predict(z)
+            
+            assignments = self.kmeans_dict[name].update_predict(z)            
             nmi = evaluate_clustering(assignments, y)
             log[name+'@nmi'] = nmi
         return log

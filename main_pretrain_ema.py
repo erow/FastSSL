@@ -103,3 +103,10 @@ if __name__ == '__main__':
     parser.add_argument("-m",type=float, default=0.996)
     args = aug_parse(parser)
     main(args)
+
+"""
+When EMA helps? 
+- On the Pros and Cons of Momentum Encoder: https://arxiv.org/pdf/2208.05744
+
+
+"""

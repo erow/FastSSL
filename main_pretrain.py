@@ -359,7 +359,7 @@ def train(args, data_loader_train,model):
 
     
     start_time = time.time()
-    if args.prob and args.gpu == 0:
+    if args.prob:
         from util.clustering import KmeansProb        
         online_prob = KmeansProb(model_without_ddp.representation,
             num_clusters=args.num_classes) 

@@ -175,7 +175,7 @@ class AIMPretrain(nn.Module):
             var = target.var(dim=-1, keepdim=True)
             target = (target - mean) / (var + 1.e-6)**.5
 
-        loss = (pred - target) ** 2
+        loss = (pred[:,self.prefix_len:-1] - target[:,self.prefix_len+1:]) ** 2 # next token prediction
         loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
         loss = loss.mean()
         return loss, {}
