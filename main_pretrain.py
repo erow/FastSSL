@@ -344,20 +344,6 @@ def train(args, data_loader_train,model):
 
     print(f"Start training for {args.epochs} epochs")
     
-    if global_rank == 0 and args.output_dir is not None:
-        args.log_dir = os.path.join(args.output_dir, 'log')
-        os.makedirs(args.log_dir, exist_ok=True)
-        # log with wandb
-        open(output_dir/"config.gin",'w').write(gin.operative_config_str(),)
-        if not args.no_wandb:
-            import wandb
-            wandb.init(dir=args.log_dir,config=args.__dict__,sync_tensorboard=True,resume=False if args.resume is None else True , job_type='train')
-            wandb.save(os.path.join(args.output_dir, 'config.gin'),base_path=args.output_dir)
-        log_writer = SummaryWriter(log_dir=args.log_dir)
-    else:
-        log_writer = None
-
-    
     start_time = time.time()
     if args.prob:
         from util.clustering import KmeansProb        

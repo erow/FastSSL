@@ -22,7 +22,7 @@ torchrun bin/data_profile.py --data_set imnet --data_path ../data/miniImagenet/ 
 SimCLR is a simple contrastive learning framework that learns representations by maximizing agreement between differently augmented views of the same data sample. We provide a simple implementation of SimCLR in the `models/simclr.py` file. You can run the following command to train the SimCLR model on CIFAR10.
 
 ```bash
-WANDB_NAME=simclr-cifar10 torchrun main_pretrain.py --data_set cifar10 --data_path ../data/  --batch_size 512 --epochs=200 --warmup_epochs=10 --ckpt_freq 100 --opt lion --blr=1e-4  --cfgs configs/cifar.gin configs/vitt.gin --gin build_model.model_fn=@SimCLR SimCLR.embed_dim=192
+WANDB_NAME=simclr-cifar10 torchrun main_pretrain.py --data_set cifar10 --data_path ../data/  --batch_size 512 --epochs=200 --warmup_epochs=10 --ckpt_freq 100 --opt lion --blr=1e-4  --cfgs configs/cifar.gin configs/vitt.gin --gin build_model.embed_dim=192 build_model.model_fn=@SimCLR 
 ```
 
 ### MoCo
@@ -60,7 +60,7 @@ WANDB_NAME=amae-cifar10 torchrun main_pretrain.py --data_set cifar10 --data_path
 ### AIM
 
 ```bash
-WANDB_NAME=aim-cifar10 torchrun --master_port 20953 --nproc_per_node=4 main_pretrain.py --data_set cifar10 --data_path ../data/ --batch_size 512 --epochs=200 --warmup_epochs=10 --ckpt_freq 100 --opt lion --blr=1e-4 --cfgs configs/cifar.gin --gin build_dataset.transform_fn=@SimpleAugmentation SimpleAugmentation.img_size=32 build_model.model_fn=@aim_tiny 
+WANDB_NAME=aim-cifar10 torchrun main_pretrain.py --data_set cifar10 --data_path ../data/ --batch_size 512 --epochs=200 --warmup_epochs=10 --ckpt_freq 100 --opt lion --blr=1e-4 --clip_grad 1 --cfgs configs/cifar.gin --gin build_dataset.transform_fn=@SimpleAugmentation SimpleAugmentation.img_size=32 build_model.model_fn=@aim_tiny 
 ```
 
 ## Evaluation

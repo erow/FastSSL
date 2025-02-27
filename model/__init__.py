@@ -5,3 +5,4 @@ import model.moco
 import model.simsiam
 import model.dino
 import model.aim
+import model.vcl
