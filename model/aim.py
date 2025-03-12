@@ -7,12 +7,6 @@ Reference: https://github.com/apple/ml-aim
 - Prefix causal attention: 
 """
 
-
-# For licensing see accompanying LICENSE file.
-# Copyright (C) 2024 Apple Inc. All Rights Reserved.
-# --------------------------------------------------
-# References:
-# https://github.com/facebookresearch/ImageBind
 import math
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 

@@ -6,3 +6,4 @@ import model.simsiam
 import model.dino
 import model.aim
 import model.vcl
+import model.mcl

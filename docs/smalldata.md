@@ -16,6 +16,10 @@ torchrun bin/data_profile.py --data_set imnet --data_path ../data/miniImagenet/ 
 **CIFAR10** is a dataset of 60,000 32x32 color images in 10 classes, with 6,000 images per class. There are 50,000 training images and 10,000 test images.
 **IMNET64** is a variant of ImageNet with downsampled images. Here, we use the mini-ImageNet dataset with 64x64 images, which can be found at [https://www.image-net.org/download-images.php]. The dataset contains 1000 classes and 1,281,167 images.
 
+## Results
+
+All models are available in https://wandb.ai/erow/FastSSL.
+
 ## Pretraining Models
 
 ### SimCLR 

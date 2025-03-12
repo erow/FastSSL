@@ -64,6 +64,7 @@ class DINOHead(nn.Module):
 class DINO(nn.Module):
     def __init__(self, 
                  embed_dim = 2048,
+                 norm_last_layer=True,
                  out_dim=60000, 
                  teacher_temp=0.05, student_temp=0.1,
                  center_momentum=0.9):
@@ -81,13 +82,13 @@ class DINO(nn.Module):
 
         # build encoders
         backbone = create_backbone()        
-        projector = DINOHead(embed_dim, out_dim)
+        projector = DINOHead(embed_dim, out_dim, norm_last_layer=norm_last_layer)
         
         self.embed_dim = embed_dim
         self.student = nn.Sequential(backbone,projector)
         
         _teacher = nn.Sequential(create_backbone(),
-                                 DINOHead(embed_dim, out_dim))
+                                 DINOHead(embed_dim, out_dim,))
         _teacher.requires_grad_(False)
         self._teacher = _teacher
         self.update(0)
