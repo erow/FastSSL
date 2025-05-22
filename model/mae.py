@@ -23,22 +23,24 @@ import gin
 from torchvision.transforms import GaussianBlur
 from layers.target import build_target
 # recipe https://github.com/facebookresearch/mae/blob/main/PRETRAIN.md
-@gin.configurable()
+
 class MaskedAutoencoderViT(nn.Module):
     """ Masked Autoencoder with VisionTransformer backbone    
     """
     def __init__(self, img_size=224, patch_size=16, in_chans=3,
-                 mask_ratio=0.75,
+                 mask_ratio: float=0.75,
+                 ra=1,
                  embed_dim=1024, depth=24, num_heads=16,
                  decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16, decoder_feature_size=None,
                  mlp_ratio=4., norm_layer=partial(nn.LayerNorm, eps=1e-6)):
         super().__init__()
+        self.ra = ra
         self.mask_ratio = mask_ratio
         self.embed_dim = embed_dim
         self.img_size=img_size
         # --------------------------------------------------------------------------
         # MAE encoder specifics
-        self.patch_embed = PatchEmbed(img_size, patch_size, in_chans, embed_dim, strict_img_size=False)
+        self.patch_embed = PatchEmbed(img_size, patch_size, in_chans, embed_dim, strict_img_size=True)
         num_patches = self.patch_embed.num_patches
 
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
@@ -130,6 +132,7 @@ class MaskedAutoencoderViT(nn.Module):
         imgs = x.reshape(shape=(x.shape[0], 3, h * p, h * p))
         return imgs
 
+    
     def random_masking(self, x, mask_ratio):
         """
         Perform per-sample random masking by per-sample shuffling.
@@ -139,7 +142,7 @@ class MaskedAutoencoderViT(nn.Module):
         N, L, D = x.shape  # batch, length, dim
         len_keep = int(L * (1 - mask_ratio))
         
-        noise = torch.rand(N, L, device=x.device)  # noise in [0, 1]
+        noise = torch.rand(N, L, device=x.device)  # noise in [0, 1]        
         
         # sort noise for each sample
         ids_shuffle = torch.argsort(noise, dim=1)  # ascend: small is keep, large is remove
@@ -208,6 +211,8 @@ class MaskedAutoencoderViT(nn.Module):
 
         return x, mask, ids_restore
 
+    
+    
     def forward_decoder(self, x, ids_restore,pos_embed=None):
         if pos_embed is None:
             pos_embed = self.decoder_pos_embed
@@ -242,32 +247,30 @@ class MaskedAutoencoderViT(nn.Module):
         self.log = {}
         if isinstance(imgs, list) or isinstance(imgs, tuple):
             imgs = imgs[0]
+        if self.ra>1:
+            imgs = imgs.repeat(self.ra,1,1,1)
         ## dynamic pos embed
         B, C, H, W = imgs.shape
-        pos_embed = resample_abs_pos_embed(
-            self.pos_embed,
-            (H//self.patch_embed.patch_size[0], W//self.patch_embed.patch_size[1]),
-        )
-        decoder_pos_embed = resample_abs_pos_embed(
-            self.decoder_pos_embed,
-            (H//self.patch_embed.patch_size[0], W//self.patch_embed.patch_size[1]),
-        )
+        # pos_embed = resample_abs_pos_embed(
+        #     self.pos_embed,
+        #     (H//self.patch_embed.patch_size[0], W//self.patch_embed.patch_size[1]),
+        # )
+        # decoder_pos_embed = resample_abs_pos_embed(
+        #     self.decoder_pos_embed,
+        #     (H//self.patch_embed.patch_size[0], W//self.patch_embed.patch_size[1]),
+        # )
         # pos_embed, decoder_pos_embed = self.pos_embed, self.decoder_embed
-        ## dynamic pos embed
-        
-        mask_ratio= self.mask_ratio
-
-        latent, mask, ids_restore = self.forward_encoder(imgs, mask_ratio,pos_embed)
-        pred = self.forward_decoder(latent, ids_restore,decoder_pos_embed)  # [N, L, p*p*3]
-        
+        ## dynamic pos embed        
+        latent, mask, ids_restore = self.forward_encoder(imgs, self.mask_ratio)        
+        pred = self.forward_decoder(latent, ids_restore,)  # [N, L, p*p*3]        
         loss = self.target_loss(imgs, pred, mask)
         return loss, self.log
 
 @gin.configurable()
 def mae_tiny(**kwargs):
     default_cfg = dict(
-        patch_size=16,embed_dim=192,depth=12,num_heads=12,
-        decoder_embed_dim=96,decoder_depth=1,decoder_num_heads=3,
+        patch_size=16,embed_dim=192,depth=12,num_heads=3,
+        decoder_embed_dim=384, decoder_depth=4, decoder_num_heads=6,
         mlp_ratio=4,
         norm_layer=partial(nn.LayerNorm, eps=1e-6)
     )
@@ -277,19 +280,18 @@ def mae_tiny(**kwargs):
     return model
 
 @gin.configurable()
-def mae_vit_small_patch16_dec512d8b(**kwargs):
+def mae_small(**kwargs):
     default_cfg = dict(
         patch_size=16, embed_dim=384, depth=12, num_heads=6, 
         decoder_embed_dim=512, decoder_depth=4, decoder_num_heads=16,
-        mlp_ratio=4,
-        norm_layer=partial(nn.LayerNorm, eps=1e-6))
+        mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6))
     default_cfg.update(kwargs)
         
     model = MaskedAutoencoderViT(**default_cfg)
     return model
 
 @gin.configurable()
-def mae_vit_base_patch16_dec512d8b(**kwargs):
+def mae_base(**kwargs):
     default_cfg = dict(
         patch_size=16, embed_dim=768, depth=12, num_heads=12,
         decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
@@ -300,7 +302,7 @@ def mae_vit_base_patch16_dec512d8b(**kwargs):
     return model
 
 @gin.configurable()
-def mae_vit_large_patch16_dec512d8b(**kwargs):
+def mae_large(**kwargs):
     default_cfg = dict(
         patch_size=16, embed_dim=1024, depth=24, num_heads=16,
         decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
@@ -311,7 +313,7 @@ def mae_vit_large_patch16_dec512d8b(**kwargs):
     return model
 
 @gin.configurable()
-def mae_vit_huge_patch14_dec512d8b(**kwargs):
+def mae_huge_patch14_dec512d8b(**kwargs):
     default_cfg = dict(
         patch_size=14, embed_dim=1280, depth=32, num_heads=16,
         decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
@@ -321,8 +323,16 @@ def mae_vit_huge_patch14_dec512d8b(**kwargs):
     model = MaskedAutoencoderViT(**default_cfg)
     return model
 
-# set recommended archs
-mae_vit_small_patch16 = mae_vit_small_patch16_dec512d8b
-mae_vit_base_patch16 = mae_vit_base_patch16_dec512d8b  # decoder: 512 dim, 8 blocks
-mae_vit_large_patch16 = mae_vit_large_patch16_dec512d8b  # decoder: 512 dim, 8 blocks
-mae_vit_huge_patch14 = mae_vit_huge_patch14_dec512d8b  # decoder: 512 dim, 8 blocks
+if __name__ == '__main__':
+    from timm.models.vision_transformer import Attention
+    for dim in range(480, 384-1,-48):
+        print(f'try dim={dim}',end=',',flush=True)
+        x = torch.rand(512,197,dim).cuda()
+        model = Attention(dim,1)
+        model.train().cuda()
+        with torch.amp.autocast('cuda'):
+            latent = model(x)
+            loss = latent.mean()
+            loss.backward()
+        
+        print(f'success!')

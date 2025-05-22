@@ -111,9 +111,10 @@ class MetricLogger(object):
     def __str__(self):
         loss_str = []
         for name, meter in self.meters.items():
-            loss_str.append(
-                "{}: {}".format(name, str(meter))
-            )
+            if meter.count>0:
+                loss_str.append(
+                    "{}: {}".format(name, str(meter))
+                )
         return self.delimiter.join(loss_str)
 
     def synchronize_between_processes(self):
@@ -170,20 +171,24 @@ class MetricLogger(object):
             header, total_time_str, total_time / len(iterable)))
 
 
+builtin_print = builtins.print
+def print_info(*args, **kwargs):
+    force = kwargs.pop('force', False)
+    force = force or (get_world_size() > 8)
+    # if is_master or force:
+    now = datetime.datetime.now().time()
+    builtin_print('[{}] '.format(now), *args, **kwargs)  # print with time stamp
+def print_none(*args,**kwargs):
+    pass
+
 def setup_for_distributed(is_master):
     """
     This function disables printing when not in master process
     """
-    builtin_print = builtins.print
-
-    def print(*args, **kwargs):
-        force = kwargs.pop('force', False)
-        force = force or (get_world_size() > 8)
-        if is_master or force:
-            now = datetime.datetime.now().time()
-            builtin_print('[{}] '.format(now), *args, **kwargs)  # print with time stamp
-
-    builtins.print = print
+    if is_master:
+        builtins.print = print_info
+    else:
+        builtins.print = print_none
 
 
 def is_dist_avail_and_initialized():
@@ -263,7 +268,7 @@ class NativeScalerWithGradNormCount:
     def __init__(self):
         self._scaler = torch.cuda.amp.GradScaler()
 
-    def __call__(self, loss, optimizer, clip_grad=None, parameters=None, create_graph=False, update_grad=True):
+    def __call__(self, loss, optimizer, clip_grad=None, parameters=None, create_graph=False, update_grad=True):        
         self._scaler.scale(loss).backward(create_graph=create_graph)
         if update_grad:
             if clip_grad is not None:
@@ -301,7 +306,7 @@ def get_grad_norm_(parameters, norm_type: float = 2.0) -> torch.Tensor:
     return total_norm
 
 
-def save_model(args, epoch, model, model_without_ddp, optimizer, loss_scaler, bac=True):
+def save_model(args, epoch, model, optimizer, loss_scaler, bac=True):
     output_dir = Path(args.output_dir)
     epoch_name = str(epoch)
     if loss_scaler is not None:
@@ -310,7 +315,7 @@ def save_model(args, epoch, model, model_without_ddp, optimizer, loss_scaler, ba
             checkpoint_paths.append(output_dir / ('checkpoint-%s.pth' % epoch_name))
         for checkpoint_path in checkpoint_paths:
             to_save = {
-                'model': model_without_ddp.state_dict(),
+                'model': model.state_dict(),
                 'optimizer': optimizer.state_dict(),
                 'epoch': epoch,
                 'scaler': loss_scaler.state_dict(),

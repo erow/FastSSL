@@ -8,8 +8,16 @@ Reference: https://github.com/facebookresearch/moco-v3
 ## [train](https://github.com/facebookresearch/moco-v3/blob/main/CONFIG.md)
 
 ResNet50
-`torchrun --nproc_per_node=8 main_pretrain_ema.py --batch_size=128 --opt LARS --blr=5e-2 --weight_decay=1.5e-6 --epochs=100 --warmup_epochs=10 --ckpt_freq=100 --data_path $train_path --prob_path $val_path --gin  build_dataset.transform_fn=@MultiviewPipeline MultiviewPipeline.scale="(0.2,1)" build_model.model_fn=@MoCo MoCo.T=1 -m 0.99 `
+```python
+torchrun --nproc_per_node=8 main_pretrain_ema.py --batch_size=128 --opt LARS --blr=5e-2 --weight_decay=1.5e-6 --epochs=100 --warmup_epochs=10 --ckpt_freq=100 --data_path $FFCVTRAIN --data_set ffcv --gin  build_dataset.transform_fn=@MultiviewPipeline MultiviewPipeline.scale="(0.2,1)" build_model.model_fn=@MoCo MoCo.T=1 -m 0.99 
+```
 
+ViT-Base, 1-node (8-GPU) pre-training (bs=4K).
+```
+torchrun --nproc_per_node=8 main_pretrain_ema.py --batch_size=512 --opt adamw --blr=1.5e-4 --opt_betas 0.9 0.95 --weight_decay=.1 \
+    --epochs=300 --warmup_epochs=40 --ckpt_freq=20 --data_path $FFCVTRAIN \
+    -m 0.99 --gin build_dataset.transform_fn=@MultiviewPipeline build_model.model_fn=@MoCo MoCo.T=0.2 MoCo.stop_grad=True MoCo.embed_dim=768 create_backbone.name=\"vit_base_patch16_224\" 
+```
 
 ## network
 MoCo v3 consists of backbone $f(*)$, projector $f_q(*)$, predictor $f_k(*)$, and their momentum version, where projector is updated by EMA, predictor is learnable. 
@@ -53,11 +61,12 @@ class MoCo(nn.Module):
                  embed_dim = 2048,
                  out_dim=256, 
                  mlp_dim=4096, 
-                 T=1.0,):
+                 stop_grad=True,
+                 T=0.2,):
         """
         dim: feature dimension (default: 256)
         mlp_dim: hidden dimension in MLPs (default: 4096)
-        T: softmax temperature (default: 1.0)
+        T: softmax temperature (default: 0.2)
         """
         super(MoCo, self).__init__()
 
@@ -66,6 +75,8 @@ class MoCo(nn.Module):
 
         # build encoders
         backbone = create_backbone()
+        if stop_grad and hasattr(backbone, 'patch_embed'):
+            backbone.patch_embed.requires_grad_(False)            
         
         self.embed_dim = embed_dim
         projector = build_head(2,embed_dim,mlp_dim,out_dim)
