@@ -10,6 +10,7 @@ Reference: https://github.com/google-research/simclr
 - Projector: a MLP with BN. By leveraging the nonlinear transformation g(·), more information can be formed and maintained in h. 2048-2048-256
 - Batch size: it is crucial for improving performance. BS=4096 achieves good results.
 - Epoch: Contrastive learning benefits (more) from larger batch sizes and longer training. At least 400 epochs.
+
 # Result
 
 

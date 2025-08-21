@@ -13,11 +13,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from timm.layers.pos_embed import resample_abs_pos_embed
-from model.operation import build_mlp, contrastive_loss
 from util.pos_embed import get_2d_sincos_pos_embed
 import gin
 import timm
-from model.models_mae import MaskedAutoencoderViT,build_mae_backbone
+# from model.operation import build_mlp, contrastive_loss
+# from model.models_mae import MaskedAutoencoderViT,build_mae_backbone
 
 
 

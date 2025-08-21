@@ -67,6 +67,17 @@ WANDB_NAME=amae-cifar10 torchrun main_pretrain.py --data_set cifar10 --data_path
 WANDB_NAME=aim-cifar10 torchrun main_pretrain.py --data_set cifar10 --data_path ../data/ --batch_size 512 --epochs=200 --warmup_epochs=10 --ckpt_freq 100 --opt lion --blr=1e-4 --clip_grad 1 --cfgs configs/cifar.gin --gin build_dataset.transform_fn=@SimpleAugmentation SimpleAugmentation.img_size=32 build_model.model_fn=@aim_tiny 
 ```
 
+### SplitMask
+```bash
+torchrun --master_port=12387  main_pretrain_ema.py --data_set cifar10 --data_path ../data/torch_data/  --batch_size 512 --epochs=200 --warmup_epochs=10 --ckpt_freq 100  --blr=5e-4  --cfgs configs/cifar.gin configs/vitt.gin --gin build_dataset.transform_fn=@SimpleAugmentation SimpleAugmentation.img_size=32 build_model.model_fn=@tiny_split 
+```
+### SimDiNO
+```bash
+torchrun --master_port 21395 --nproc_per_node=4  main_pretrain_ema.py --data_set ffcv  --data_path ../data/ffcv/IN1K_train_smart.ffcv  --batch_size 256 --epochs=100 --warmup_epochs=10 --ckpt_freq 100  --gin create_backbone.name="'vit_tiny_patch16_224'" build_model.model_fn=@SimDINO  SimDINO.embed_dim=192 build_dataset.transform_fn=@MultiviewPipeline MultiviewPipeline.local_crops_number=0
+```
+
+
+
 ## Evaluation
 
 finetune

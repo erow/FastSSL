@@ -280,6 +280,18 @@ def aim_tiny(img_size: Union[int, Tuple[int, int]] = 32, **kwargs: Any) -> AIMPr
     return AIMPretrain(preprocessor, trunk, head)
 
 @gin.configurable()
+def aim_base(img_size: Union[int, Tuple[int, int]] = 224, **kwargs: Any) -> AIMPretrain:
+    preprocessor, trunk, head = aim_config(
+        img_size=img_size,
+        patch_size=14,
+        embed_dim=768,
+        num_blocks=12,
+        num_heads=12,
+        **kwargs,
+    )
+    return AIMPretrain(preprocessor, trunk, head)
+
+@gin.configurable()
 def aim_600M(img_size: Union[int, Tuple[int, int]] = 224, **kwargs: Any) -> AIMPretrain:
     preprocessor, trunk, head = aim_config(
         img_size=img_size,

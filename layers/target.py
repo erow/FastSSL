@@ -4,7 +4,7 @@ import gin
 import torch
 from torch import nn
 from .operation import patchify, unpatchify
-
+from einops import rearrange
 
 @gin.configurable
 class TargetMSE(nn.Module):
@@ -37,7 +37,72 @@ class TargetMSE(nn.Module):
         else:
             loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
         return loss
+    
+@gin.configurable
+class TargetPCA(nn.Module):
+    def __init__(self,dim=1,patch_size=16,ignore_mask=False):
+        super().__init__()
+        self.dim = dim
+        self.patch_size = patch_size
+        self.ignore_mask = ignore_mask
+        
+    
+    def forward(self, imgs, pred,mask=None):
+        """
+        imgs: [N, 3, H, W]
+        pred: [N, L, p*p*3]
+        mask: [N, L], 0 is keep, 1 is remove, 
+        """
+        
+        
+        target = rearrange(imgs,'b c (h p1) (w p2)-> b c (h w) (p1 p2)', p1=self.patch_size,p2=self.patch_size)        
+        u, _, _ = torch.linalg.svd(target,) # 3 B, N, 40
+        # remove the top-n dimensions to get informative u
+        u = rearrange(u[:,:,:, self.dim:self.dim+40], 'b c n d-> b n (c d)') # B, N, 40-dim
+        
+        pred = pred[:,:,:40*3]
 
+        loss = (pred - u) ** 2
+        loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
+
+        if mask is None or self.ignore_mask:
+            loss = loss.mean()
+        else:
+            loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
+        return loss
+    
+@gin.configurable
+class TargetSVD(nn.Module):
+    def __init__(self,dim=1,patch_size=16,ignore_mask=False):
+        super().__init__()
+        self.dim = dim
+        self.patch_size = patch_size
+        self.ignore_mask = ignore_mask
+        self.U = nn.Linear(patch_size*patch_size*3,dim,bias=False)
+        self.V = nn.Linear(dim,patch_size*patch_size*3,bias=False)
+    
+    def forward(self, imgs, pred,mask=None):
+        """
+        imgs: [N, 3, H, W]
+        pred: [N, L, p*p*3]
+        mask: [N, L], 0 is keep, 1 is remove, 
+        """
+        if len(pred.shape)==4:
+            pred = patchify(pred,self.patch_size)
+        
+        target = patchify(imgs,self.patch_size)
+        
+        principle = self.V(self.U(target))
+        pred = pred + principle
+
+        loss = (pred - target) ** 2
+        loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
+
+        if mask is None or self.ignore_mask:
+            loss = loss.mean()
+        else:
+            loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
+        return loss
 @gin.configurable
 class TargetSSIM(nn.Module):
     def __init__(self,patch_size=16,ignore_mask=False):

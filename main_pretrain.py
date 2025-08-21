@@ -24,7 +24,8 @@ assert timm.__version__ >= "0.6.12"  # version check
 import importlib
 import pkgutil
 
-import timm.optim.optim_factory as optim_factory
+import timm.optim as optim_factory
+
 from timm.layers import (convert_splitbn_model, convert_sync_batchnorm,
                          set_fast_norm)
 
@@ -38,6 +39,7 @@ from util.dres import DynamicMasking
 
 def get_args_parser():
     parser = argparse.ArgumentParser('Fast Self-supervised Learning', add_help=False)
+    parser.add_argument('--daccum',default=False,action='store_true')
     parser.add_argument('--batch_size', default=64, type=int,
                         help='Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus)')
     parser.add_argument('--epochs', default=400, type=int)
@@ -59,7 +61,9 @@ def get_args_parser():
                         help='Optimizer (default: "adamw"')
     parser.add_argument('--opt_eps', default=1e-8, type=float, metavar='EPSILON',
                         help='Optimizer Epsilon (default: 1e-8)')
-    parser.add_argument('--opt_betas', default=None, type=float, nargs='+', metavar='BETA',
+    parser.add_argument('--opt_filter',default=False, action='store_true', 
+                        help='If True, bias, norm layer parameters (all 1d params) will not have weight decay applied. Only used when model_or_params is a model and weight_decay > 0.')
+    parser.add_argument('--opt_betas', default=(0.9,0.95), type=float, nargs='+', metavar='BETA',
                         help='Optimizer Betas (default: None, use opt default)')
     parser.add_argument('--clip_grad', type=float, default=None, metavar='NORM',
                         help='Clip gradient norm (default: None, no clipping)')
@@ -146,11 +150,6 @@ def train_one_epoch(model, online_prob,
         else:
             samples = samples.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True).flatten()
-            
-        # we use a per iteration (instead of per epoch) lr scheduler
-        if data_iter_step % accum_iter == 0:
-            lr_sched.adjust_learning_rate(optimizer, data_iter_step / len(data_loader) + epoch, args)
-        
 
         with torch.amp.autocast('cuda',dtype=torch.float16):
             loss, log = model(samples,targets=targets, epoch=epoch)
@@ -163,54 +162,52 @@ def train_one_epoch(model, online_prob,
             sys.exit(1)
 
         loss /= accum_iter
-        loss_scaler(loss, optimizer, parameters=model.parameters(),
-                    update_grad=(data_iter_step + 1) % accum_iter == 0)
+        
         if (data_iter_step + 1) % accum_iter == 0:
-            optimizer.zero_grad()            
-                            
+            # update step 
+            
+            # we use a per iteration (instead of per epoch) lr scheduler
+            lr = lr_sched.adjust_learning_rate(optimizer, data_iter_step / len(data_loader) + epoch, args)
+        
+            # gradient step
+            norm = loss_scaler(loss, optimizer, parameters=model.parameters(),
+                    update_grad=True)
+            optimizer.zero_grad()
+        
             if online_prob:
                 prob_log = online_prob.step(samples, targets)
                 log.update(prob_log)
+            
+            
+            metric_logger.update(loss=loss_value)
+            metric_logger.update(lr=lr)
+            for k,v in log.items():
+                metric_logger.update(**{k:v})
+            
+            loss_value_reduce = misc.all_reduce_mean(loss_value)
+            if log_writer is not None and (data_iter_step + 1) % accum_iter == 0:
+                """ We use epoch_1000x as the x-axis in tensorboard.
+                This calibrates different curves when batch size changes.
+                """
+                epoch_1000x = int((data_iter_step / len(data_loader) + epoch) * 1000)
+                log_writer.add_scalar('train_loss', loss_value_reduce, epoch_1000x)
+                log_writer.add_scalar('epoch_1000x',epoch_1000x)
+                log_writer.add_scalar('lr', lr, epoch_1000x)
+                log_writer.add_scalar('norm',norm,epoch_1000x)
+                for k,v in log.items():
+                    log_writer.add_scalar(f'{k}', v, epoch_1000x)
+        else:
+            norm = loss_scaler(loss, optimizer, parameters=model.parameters(),
+                    update_grad=False)
         if args.device == 'cuda':
             torch.cuda.synchronize()
 
-        lr = optimizer.param_groups[-1]["lr"]
-        metric_logger.update(loss=loss_value)
-        metric_logger.update(lr=lr)
-        for k,v in log.items():
-            metric_logger.update(**{k:v})
         
-        
-
-        loss_value_reduce = misc.all_reduce_mean(loss_value)
-        if log_writer is not None and (data_iter_step + 1) % accum_iter == 0:
-            """ We use epoch_1000x as the x-axis in tensorboard.
-            This calibrates different curves when batch size changes.
-            """
-            epoch_1000x = int((data_iter_step / len(data_loader) + epoch) * 1000)
-            log_writer.add_scalar('train_loss', loss_value_reduce, epoch_1000x)
-            log_writer.add_scalar('epoch_1000x',epoch_1000x)
-            log_writer.add_scalar('lr', lr, epoch_1000x)
-            for k,v in log.items():
-                log_writer.add_scalar(f'{k}', v, epoch_1000x)
 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
-
-class MultipleOptimizer(torch.nn.Module):
-    def __init__(self, *op):
-        self.optimizers = op
-        self.param_groups = self.optimizers[0].param_groups
-
-    def zero_grad(self):
-        for op in self.optimizers:
-            op.zero_grad()
-
-    def step(self):
-        for op in self.optimizers:
-            op.step()
 
 def main(args):
     misc.init_distributed_mode(args)
@@ -229,8 +226,7 @@ def main(args):
     num_tasks = misc.get_world_size()
     global_rank = misc.get_rank()
 
-    args.eff_batch_size = args.batch_size * args.accum_iter 
-    args.batch_size = args.batch_size // misc.get_world_size()
+    args.eff_batch_size = args.batch_size * args.accum_iter * misc.get_world_size()    
     
     if args.data_set != "ffcv":
         sampler_train = torch.utils.data.DistributedSampler(
@@ -243,6 +239,7 @@ def main(args):
             num_workers=args.num_workers,
             pin_memory=args.pin_mem,
             drop_last=True,
+            persistent_workers=True if args.num_workers > 0 else False,
         )
     else:
         data_loader_train = dataset_train
@@ -250,10 +247,9 @@ def main(args):
     # initialize model
     model = build_model(args)
     if args.pretrained_weights:
-        misc.load_pretrained_weights(model.visual, args.pretrained_weights)
+        misc.load_pretrained_weights(model, args.pretrained_weights)
     if args.compile:
         model = torch.compile(model)
-
     train(args, data_loader_train, model)
 
 
@@ -295,7 +291,7 @@ def train(args, data_loader_train,model):
 
     
     if args.lr is None:  # only base_lr is specified
-        args.lr = args.blr * args.eff_batch_size / 256
+        args.lr = args.blr * args.eff_batch_size / 256 
 
     print("base lr: %.2e" % (args.lr * 256 / args.eff_batch_size))
     print("actual lr: %.2e" % args.lr)
@@ -308,31 +304,39 @@ def train(args, data_loader_train,model):
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
     
     # following timm: set wd as 0 for bias and norm layers
-    param_groups = optim_factory.param_groups_weight_decay(model_without_ddp, args.weight_decay)
-    if args.opt == 'lion':
-        from lion_pytorch import Lion
-        optimizer = Lion(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    elif args.opt == 'muon':
-        from muon import Muon
-        muon_params = []
-        adamw_params = []
-        for name, param in model.named_parameters():
-            if 'predictor' in name or 'head' in name:
-                adamw_params.append(param)
-            elif 'embed' in name:
-                adamw_params.append(param)
-            elif param.ndim < 2:
-                adamw_params.append(param)
-            else:
-                # Find ≥2D parameters in the body of the network  for Muon
-                muon_params.append(param)
-            
-        optimizer = Muon(muon_params, lr=0.02, momentum=0.95,
-                 adamw_params=adamw_params, adamw_lr=3e-4, adamw_betas=(0.90, 0.95), adamw_wd=0.01)
+    # param_groups = optim_factory.param_groups_weight_decay(model_without_ddp, args.weight_decay)     
+    
+    # if args.opt == 'adamw':
+    #     optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9,0.95),weight_decay=args.weight_decay)   
+    # elif args.opt == 'muon':
+    #     from util.muon import Muon
+    #     muon_params = []
+    #     adamw_params = []
+    #     no_weight_decay_list = []
+    #     for name, p in model.named_parameters():
+    #         if 'block' in name and p.ndim == 2:
+    #             muon_params.append(p)
+    #         elif p.ndim <= 1 or name.endswith(".bias"):
+    #             no_weight_decay_list.append(p)
+    #         else:
+    #             adamw_params.append(p)
+    #     print(f"Muon parameters: {len(muon_params)}, AdamW parameters: {len(adamw_params)}")
+    #     # if args.opt_betas is None:
+    #     #     args.opt_betas = (0.95,0.95)
+    #     muon_params = [{"params": muon_params,'weight_decay':1}]
+    #     adamw_params = [
+    #         {'params': no_weight_decay_list, 'weight_decay': 0.},
+    #         {'params': adamw_params, 'weight_decay': args.weight_decay},
+    #         ]
+    #     optimizer = Muon(lr=args.lr, wd=args.weight_decay, momentum=0.95,
+    #                      muon_params=muon_params, adamw_params=adamw_params,
+    #                      adamw_eps=args.opt_eps)
 
-    else:
-        optimizer = timm.optim.create_optimizer(args, param_groups)
-    print(optimizer)
+    # else:
+    #     optimizer = timm.optim.create_optimizer(args, param_groups)
+    
+    optimizer = optim_factory.create_optimizer(args, model,filter_bias_and_bn=args.opt_filter)
+    print('optimizer', optimizer)
     loss_scaler = misc.NativeScalerWithGradNormCount()
 
     if args.resume is None:
@@ -352,27 +356,38 @@ def train(args, data_loader_train,model):
     else:
         online_prob = None
         
+    base_accum=args.accum_iter
+        
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed and args.data_set != "ffcv":
             data_loader_train.sampler.set_epoch(epoch)
         if dres:
             dres(model_without_ddp, data_loader_train,epoch,is_ffcv=args.data_set == "ffcv")
 
+        if args.daccum:
+            ## TODO: dynamically increasing accum_iter
+            if epoch >= int(args.epochs*0.75):
+                args.accum_iter = base_accum * 2
+            elif epoch >= int(args.epochs*0.5) :
+                args.accum_iter = base_accum * 2
+            ##
+        
         train_stats = train_one_epoch(
             model, online_prob,data_loader_train,
             optimizer, device, epoch, loss_scaler,
             log_writer=log_writer,
             args=args
         )
+        
 
         if args.output_dir:
             if (epoch % args.ckpt_freq == 0 or epoch + 1 == args.epochs):
                 misc.save_model(
-                    args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
+                    args=args, model=model_without_ddp, optimizer=optimizer,
                     loss_scaler=loss_scaler, epoch=epoch)
             if args.backup:
                 misc.save_model(
-                    args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
+                    args=args, model=model_without_ddp, optimizer=optimizer,
                     loss_scaler=loss_scaler, epoch=epoch,bac=False)
 
         log_stats = {**{f'train/{k}': v for k, v in train_stats.items()},

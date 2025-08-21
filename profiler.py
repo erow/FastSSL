@@ -23,12 +23,18 @@ from pathlib import Path
 
 from os import getpid
 from psutil import Process, net_io_counters
+import timm
 import torch
 import torch.backends.cudnn as cudnn
 from torch.utils.tensorboard import SummaryWriter
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 from tqdm import tqdm
+from layers import build_model
+from main_pretrain import get_args_parser
+from util import misc
+
+import timm.optim as optim_factory
 
 from torch.profiler import profile, record_function, ProfilerActivity, schedule
 
@@ -96,6 +102,26 @@ def backward_hook_wrapper(module, details=None):
     module.register_full_backward_hook(bwd_hook_print)
     return module
 
+from torch import nn
+from layers.mae import Block
+@gin.configurable()
+class tf_base(nn.Module):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.patch_embed = nn.Conv2d(3, 768, kernel_size=16, stride=16)
+        self.block = Block(768,12,4,)
+    
+    def forward(self, x, **kwargs):
+        # patchfy
+        x = self.patch_embed(x)
+        # flatten
+        x = x.flatten(2).transpose(1, 2)
+        
+        for _ in range(12):
+            x = self.block(x)
+        loss = x.mean()
+        return loss, None
+        
 def main(args):
     misc.init_distributed_mode(args)
 
@@ -110,31 +136,11 @@ def main(args):
     np.random.seed(seed)
 
     cudnn.benchmark = True
-
-    dataset_train = build_dataset(args)
     
-    num_tasks = misc.get_world_size()
-    global_rank = misc.get_rank()
-    if args.data_set != "ffcv":
-        sampler_train = torch.utils.data.DistributedSampler(
-            dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=True
-        )
-        data_loader_train = torch.utils.data.DataLoader(
-            dataset_train, sampler=sampler_train,
-            batch_size=args.batch_size,
-            num_workers=args.num_workers,
-            pin_memory=args.pin_mem,
-            drop_last=True,
-        )
-    else:
-        data_loader_train = dataset_train
-        print("Memory Manager = %s" % str(data_loader_train.memory_manager)) 
-    print("data set : ", dataset_train)
-    # define the model
-    model = build_model(args)
+    model = build_model.build_model(args)
     model.to(device)
 
-    torch.compile(model)
+    
     
     model_without_ddp = model
 
@@ -153,104 +159,93 @@ def main(args):
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=False)
         model_without_ddp = model.module
     
-    # following timm: set wd as 0 for bias and norm layers
     param_groups = optim_factory.param_groups_weight_decay(model_without_ddp, args.weight_decay)
-    optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9, 0.95))    
-    loss_scaler = NativeScaler()
-    
+    # following timm: set wd as 0 for bias and norm layers
+    if args.opt == 'lion':
+        from lion_pytorch import Lion
+        optimizer = Lion(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+
+    else:
+        optimizer = timm.optim.create_optimizer(args, param_groups)
     print("Preload data")
     
-    for _ in ramqdm(data_loader_train): 
-        pass
+
     model.train()
-    print(f"Start profiling for {args.num_samples} samples.")
+
+    scaler = torch.amp.GradScaler("cuda")
     
-    scaler = torch.cuda.amp.GradScaler()
+    
+    
+    samples = torch.randn(args.batch_size, 3, 224,224).cuda()
+    if args.compile:
+        model = torch.compile(model)
+        # model = torch.jit.script(model)
     
     
     ## Profiling
-    if args.no_profile:
+    
+    
+    for data_iter_step in tqdm(range(100)):
+        if data_iter_step==10:
+            n_samples = 0
+            start_time = time.time()
+        elif data_iter_step>10:
+            n_samples +=len(samples)
         
-        for _ in range(3):
-            print("Start training one epoch.")
-            l = ramqdm(data_loader_train)
-            start = time.time()
-            num_samples = 0
-            for data_iter_step, data in enumerate(l):
-                samples,y = data
-                num_samples+=len(samples)
+        with record_function('forward'):
+            with torch.cuda.amp.autocast():
+                loss,log = model(samples,epoch=0)
+                
+        with record_function('backward'):
+            scaler.scale(loss).backward()
+        
+        with record_function('opt'):
+            scaler.step(optimizer)
+            scaler.update()
+            torch.cuda.synchronize()       
+    print('Throughput: %.1f samples/s' % (n_samples / (time.time() - start_time)))
+    
+    if not args.profile: return
+    my_schedule = schedule(
+        skip_first=20,
+        wait=5,
+        warmup=5,
+        active=10)
+    optimizer.zero_grad()
+    
+    print("Start profiling.")
+   
+    
+    with profile(activities=[ProfilerActivity.CUDA],
+        on_trace_ready=torch.profiler.tensorboard_trace_handler(args.output_dir),
+        # profile_memory=True, with_stack=True,
+        with_flops=True,
+        schedule=my_schedule,
+        ) as prof:
+        for data_iter_step in tqdm(range(40)):
+            with record_function('forward'):
                 with torch.cuda.amp.autocast():
-                    loss = model(samples,epoch=0)
-                    
+                    loss,log = model(samples,epoch=0)
+                    n_samples +=len(samples)
+            with record_function('backward'):
                 scaler.scale(loss).backward()
-                scaler.unscale_(optimizer)
+            
+            with record_function('opt'):
                 scaler.step(optimizer)
                 scaler.update()
-                optimizer.zero_grad()
-                torch.cuda.synchronize()
-                
-            end = time.time()
-            res = l.summary()
-            res.update(args.__dict__)
-            res['runtime'] = end-start
-            res['throughput'] = float(num_samples)/(end-start)
-            
-            print(f"throughput : {res['throughput']} ")
-            with open(os.path.join(args.output_dir, f"train_one_epoch-{global_rank}.json"), "a+") as file:
-                file.write(json.dumps(res)+"\n")
-    else:
-        my_schedule = schedule(
-            skip_first=100,
-            wait=5,
-            warmup=5,
-            active=10)
-        print_freq = 10
-        optimizer.zero_grad()
-        n_samples = 0
-        
-        print("Start profiling.")
-        with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-            profile_memory=True,use_cuda=True,schedule=my_schedule,with_stack=True) as prof:
-            metric_logger = misc.MetricLogger(delimiter="  ")
-            for data_iter_step, data in enumerate(metric_logger.log_every(data_loader_train, print_freq, "")):
-                with record_function('forward'):
-                    if args.data_set == "ffcv":
-                        samples = data[0]
-                    else:
-                        (samples, _) = data
-                        samples = samples.cuda(non_blocking=True)
-
-                    with torch.cuda.amp.autocast():
-                        loss = model(samples,epoch=0)
-                with record_function('backward'):
-                    scaler.scale(loss).backward()
-                
-                with record_function('opt'):
-                    scaler.unscale_(optimizer)
-                    scaler.step(optimizer)
-                    scaler.update()
-                    optimizer.zero_grad()
-                    torch.cuda.synchronize()
-                
-                n_samples +=len(samples)
-                if n_samples >=args.num_samples: 
-                    prof.step()
-                    n_samples = 0 
-                
-                if prof.step_num >= 120: break
-        
-        print(prof.key_averages(group_by_stack_n=3).table(sort_by="self_cuda_time_total", row_limit=10))
-        
-        prof.export_chrome_trace(os.path.join(args.output_dir, f"profile-{global_rank}.json"))
+                # torch.cuda.synchronize()
+                        
+            prof.step()            
+    print('Throughput: %.1f samples/s' % (n_samples / (time.time() - start_time)))
+    print(prof.key_averages(group_by_stack_n=1).table(sort_by="self_cuda_time_total", row_limit=10))
+    
+    # prof.export_chrome_trace(os.path.join(args.output_dir, f"profile.json"))
 
 if __name__ == '__main__':
     from util.helper import  aug_parse
     parser = get_args_parser()
-    parser.add_argument("-n", "--num_samples", type=int, default=512, help="number of samples to record one step for profile.")
-    parser.add_argument("--no_profile",default=False,action="store_true",help="whether to profile the model.")
+    parser.add_argument('--profile', action='store_true', help='profile',default=False)
     args = aug_parse(parser)
-    assert args.num_samples > 0, "num_samples should be larger than 0."
-    assert args.num_samples % args.batch_size == 0, "num_samples should be divisible by batch_size."
     
     if args.output_dir:
         output_dir=Path(args.output_dir)

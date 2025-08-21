@@ -7,8 +7,13 @@ Reference: https://github.com/facebookresearch/dino
 - freeze last layer: the .last_layer in 
 - output dimension: large output dimensionality improves the performance. 65536 is the best.
 
-
+# Training
+```python
+torchrun --nproc_per_node=8 main_pretrain_ema.py --data_path ${IMNET} --batch_size 64 --epochs=300 --warmup_epochs=20 --ckpt_freq 100 --weight_decay 0.2 --blr 5e-4 --opt adamw --clip_grad 3 --gin build_model.model_fn=@DINO DINO.embed_dim=768 DINO.out_dim=65536 DINO.teacher_temp=0.07 build_dataset.transform_fn=@DataAugmentationDINO DataAugmentationDINO.local_crops_number=8 create_backbone.drop_path_rate=0.1 create_backbone.name="vit_base_patch16_224" create_backbone.dynamic_img_size=True -m 0.996 
+```
 # Result:
+
+https://wandb.ai/fssl/ssl/runs/5a814o8a/overview
 
 
 """
@@ -65,11 +70,11 @@ class DINO(nn.Module):
     def __init__(self, 
                  embed_dim = 2048,
                  norm_last_layer=True,
-                 out_dim=60000, 
+                 out_dim=65536, 
                  teacher_temp=0.05, student_temp=0.1,
                  center_momentum=0.9):
         """
-        dim: feature dimension (default: 60000)
+        dim: feature dimension (default: 65536)
         teacher_temp: softmax temperature for teacher. Final value (after linear warmup) of the teacher temperature. For most experiments, anything above 0.07 is unstable. We recommend  starting with the default value of 0.04 and increase this slightly if needed.
         student_temp: 
         """

@@ -11,6 +11,7 @@
 import functools
 from typing import Any, Callable, List, Literal, Optional, Sequence, Tuple, Union
 
+import gin
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -424,3 +425,4 @@ class ReconstructionHead(nn.Module):
         x = self.blocks(x)
         x = x.reshape(B, L, -1)
         return x
+

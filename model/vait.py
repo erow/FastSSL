@@ -1,5 +1,5 @@
 """
-Reference: https://github.com/facebookresearch/mae
+Reference: https://github.com/facebookresearch/vait
 
 # Note
 - no weight decay for bias
@@ -7,8 +7,8 @@ Reference: https://github.com/facebookresearch/mae
 
 # Training
 ```python
-torchrun --nproc_per_node=8 main_pretrain.py --data_path=$FFCVTRAIN --data_set=ffcv --epochs 800 --warmup_epochs 40 --opt adamw --opt_betas 0.9 0.95 --blr 1.5e-4 --weight_decay 0.05 --batch_size 512 --gin build_model.model_fn=@mae_small build_dataset.transform_fn=@SimplePipeline  --ckpt_freq=100 
 
+--opt_filter
 ```
 
 # Result
@@ -29,24 +29,24 @@ from util.pos_embed import get_2d_sincos_pos_embed
 import gin
 from torchvision.transforms import GaussianBlur
 from layers.target import build_target
-# recipe https://github.com/facebookresearch/mae/blob/main/PRETRAIN.md
+# recipe https://github.com/facebookresearch/vait/blob/main/PRETRAIN.md
 
-class MaskedAutoencoderViT(nn.Module):
+class VariationalVisionTrasformer(nn.Module):
     """ Masked Autoencoder with VisionTransformer backbone    
     """
     def __init__(self, img_size=224, patch_size=16, in_chans=3,
                  mask_ratio: float=0.75, 
-                 ra=1,
+                 beta=1e-3,
                  embed_dim=1024, depth=24, num_heads=16,
                  decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16, decoder_feature_size=None,
                  mlp_ratio=4., norm_layer=partial(nn.LayerNorm, eps=1e-6)):
         super().__init__()
-        self.ra = ra
+        self.beta = beta
         self.mask_ratio = mask_ratio
         self.embed_dim = embed_dim
         self.img_size=img_size
         # --------------------------------------------------------------------------
-        # MAE encoder specifics
+        # vait encoder specifics
         self.patch_embed = PatchEmbed(img_size, patch_size, in_chans, embed_dim, strict_img_size=True)
         num_patches = self.patch_embed.num_patches
 
@@ -58,9 +58,9 @@ class MaskedAutoencoderViT(nn.Module):
             for i in range(depth)])
         self.norm = norm_layer(embed_dim)
         # --------------------------------------------------------------------------
-
+        self.vae_proj = nn.Linear(embed_dim, embed_dim*2, bias=True)  # VAE projection to mu and logvar
         # --------------------------------------------------------------------------
-        # MAE decoder specifics
+        # vait decoder specifics
         self.decoder_embed = nn.Linear(embed_dim, decoder_embed_dim, bias=True)
 
         self.mask_token = nn.Parameter(torch.zeros(1, 1, decoder_embed_dim))
@@ -140,33 +140,6 @@ class MaskedAutoencoderViT(nn.Module):
         return imgs
 
     
-    def random_masking(self, x, mask_ratio):
-        """
-        Perform per-sample random masking by per-sample shuffling.
-        Per-sample shuffling is done by argsort random noise.
-        x: [N, L, D], sequence
-        """
-        N, L, D = x.shape  # batch, length, dim
-        len_keep = int(L * (1 - mask_ratio))
-        
-        noise = torch.rand(N, L, device=x.device)  # noise in [0, 1]        
-        
-        # sort noise for each sample
-        ids_shuffle = torch.argsort(noise, dim=1)  # ascend: small is keep, large is remove
-        ids_restore = torch.argsort(ids_shuffle, dim=1)
-
-        # keep the first subset
-        ids_keep = ids_shuffle[:, :len_keep]
-        x_masked = torch.gather(x, dim=1, index=ids_keep.unsqueeze(-1).repeat(1, 1, D))
-
-        # generate the binary mask: 0 is keep, 1 is remove
-        mask = torch.ones([N, L], device=x.device)
-        mask[:, :len_keep] = 0
-        # unshuffle to get the binary mask
-        mask = torch.gather(mask, dim=1, index=ids_restore)
-
-        return x_masked, mask, ids_restore
-
     def representation(self, x, pos_embed=None):
         B, C, H, W = x.shape
         ## dynamic pos embed
@@ -193,7 +166,7 @@ class MaskedAutoencoderViT(nn.Module):
 
         return x[:,1:].mean(1)
 
-    def forward_encoder(self, x, mask_ratio:float,pos_embed=None):
+    def forward_encoder(self, x, pos_embed=None):
         B, C, H, W = x.shape
         if pos_embed is None:
             pos_embed = self.pos_embed
@@ -202,10 +175,7 @@ class MaskedAutoencoderViT(nn.Module):
         
         # add pos embed w/o cls token
         x = x + pos_embed[:, 1:, :]
-
-        # masking: length -> length * mask_ratio
-        x, mask, ids_restore = self.random_masking(x, mask_ratio)
-
+        
         # append cls token
         cls_token = self.cls_token + pos_embed[:, :1, :]
         cls_tokens = cls_token.expand(x.shape[0], -1, -1)
@@ -216,22 +186,14 @@ class MaskedAutoencoderViT(nn.Module):
             x = blk(x)
         x = self.norm(x)
 
-        return x, mask, ids_restore
+        return x
 
     
     
-    def forward_decoder(self, x, ids_restore,pos_embed=None):
+    def forward_decoder(self, x, pos_embed=None):
         if pos_embed is None:
-            pos_embed = self.decoder_pos_embed
-        # embed tokens
-        x = self.decoder_embed(x)
-
-        # append mask tokens to sequence
-        mask_tokens = self.mask_token.repeat(x.shape[0], ids_restore.shape[1] + 1 - x.shape[1], 1)
-        x_ = torch.cat([x[:, 1:, :], mask_tokens], dim=1)  # no cls token
-        x_ = torch.gather(x_, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, x.shape[2]))  # unshuffle
-        x = torch.cat([x[:, :1, :], x_], dim=1)  # append cls token
-
+            pos_embed = self.decoder_pos_embed        
+        x = self.decoder_embed(x)  # [N, L, decoder_embed_dim]
         # add pos embed
         x = x + pos_embed
 
@@ -254,27 +216,40 @@ class MaskedAutoencoderViT(nn.Module):
         self.log = {}
         if isinstance(imgs, list) or isinstance(imgs, tuple):
             imgs = imgs[0]
-        if self.ra>1:
-            imgs = imgs.repeat(self.ra,1,1,1)
-        ## dynamic pos embed
-        B, C, H, W = imgs.shape
-        # pos_embed = resample_abs_pos_embed(
-        #     self.pos_embed,
-        #     (H//self.patch_embed.patch_size[0], W//self.patch_embed.patch_size[1]),
-        # )
-        # decoder_pos_embed = resample_abs_pos_embed(
-        #     self.decoder_pos_embed,
-        #     (H//self.patch_embed.patch_size[0], W//self.patch_embed.patch_size[1]),
-        # )
-        # pos_embed, decoder_pos_embed = self.pos_embed, self.decoder_embed
-        ## dynamic pos embed        
-        latent, mask, ids_restore = self.forward_encoder(imgs, self.mask_ratio)        
-        pred = self.forward_decoder(latent, ids_restore,)  # [N, L, p*p*3]        
-        loss = self.target_loss(imgs, pred, mask)
+                   
+        x = self.forward_encoder(imgs)   
+        mu,logvar = self.vae_proj(x).chunk(2,dim=2)
+        z = mu + torch.rand_like(logvar)*(logvar/2).exp()
+        kl_loss = compute_gaussian_kl(mu,logvar,axis=None).mean()
+        self.log['kl_loss'] = kl_loss
+        
+        # mask features
+        m = self.mask_ratio
+        mask = torch.rand_like(z)<m
+        e = torch.randn_like(z)
+        c = torch.where(mask, e, z)
+        c = c / (1-m)  # this makes sure that the similarity of z*c is the same as changing m.        
+        
+        pred = self.forward_decoder(c)  # [N, L, p*p*3]     
+        target = self.patchify(imgs)
+           
+        recon_loss = F.mse_loss(pred,target)
+        self.log['recon_loss'] = recon_loss
+        
+        loss = recon_loss + self.beta * kl_loss
         return loss, self.log
 
+
+def compute_gaussian_kl(z_mean, z_logvar,axis=0):
+    """Compute KL divergence between input Gaussian and Standard Normal."""
+    kl =torch.square(z_mean) + torch.exp(z_logvar) - z_logvar - 1
+    if axis is None:
+        return 0.5 * kl
+    else:
+        return 0.5 * torch.mean(kl, axis)
+    
 @gin.configurable()
-def mae_tiny(**kwargs):
+def vait_tiny(**kwargs):
     default_cfg = dict(
         patch_size=16,embed_dim=192,depth=12,num_heads=3,
         decoder_embed_dim=384, decoder_depth=4, decoder_num_heads=6,
@@ -283,63 +258,53 @@ def mae_tiny(**kwargs):
     )
     default_cfg.update(kwargs)
         
-    model = MaskedAutoencoderViT(**default_cfg)
+    model = VariationalVisionTrasformer(**default_cfg)
     return model
 
 @gin.configurable()
-def mae_small(**kwargs):
+def vait_small(**kwargs):
     default_cfg = dict(
         patch_size=16, embed_dim=384, depth=12, num_heads=6, 
         decoder_embed_dim=512, decoder_depth=4, decoder_num_heads=16,
         mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6))
     default_cfg.update(kwargs)
         
-    model = MaskedAutoencoderViT(**default_cfg)
+    model = VariationalVisionTrasformer(**default_cfg)
     return model
 
 @gin.configurable()
-def mae_base(**kwargs):
+def vait_base(**kwargs):
     default_cfg = dict(
         patch_size=16, embed_dim=768, depth=12, num_heads=12,
         decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
         mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6))
     default_cfg.update(kwargs)
         
-    model = MaskedAutoencoderViT(**default_cfg)
+    model = VariationalVisionTrasformer(**default_cfg)
     return model
 
 @gin.configurable()
-def mae_large(**kwargs):
+def vait_large(**kwargs):
     default_cfg = dict(
         patch_size=16, embed_dim=1024, depth=24, num_heads=16,
         decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
         mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6))
     default_cfg.update(kwargs)
         
-    model = MaskedAutoencoderViT(**default_cfg)
+    model = VariationalVisionTrasformer(**default_cfg)
     return model
 
 @gin.configurable()
-def mae_huge_patch14_dec512d8b(**kwargs):
+def vait_huge_patch14_dec512d8b(**kwargs):
     default_cfg = dict(
         patch_size=14, embed_dim=1280, depth=32, num_heads=16,
         decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
         mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6))
     default_cfg.update(kwargs)
         
-    model = MaskedAutoencoderViT(**default_cfg)
+    model = VariationalVisionTrasformer(**default_cfg)
     return model
 
 if __name__ == '__main__':
-    from timm.models.vision_transformer import Attention
-    for dim in range(480, 384-1,-48):
-        print(f'try dim={dim}',end=',',flush=True)
-        x = torch.rand(512,197,dim).cuda()
-        model = Attention(dim,1)
-        model.train().cuda()
-        with torch.amp.autocast('cuda'):
-            latent = model(x)
-            loss = latent.mean()
-            loss.backward()
-        
-        print(f'success!')
+    model = vait_small()
+    

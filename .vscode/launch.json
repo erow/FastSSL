@@ -9,7 +9,8 @@
             "type": "debugpy",
             "request": "launch",
             "program": "${file}",
-            "console": "integratedTerminal"
+            "console": "integratedTerminal",
+            "justMyCode": false,
         },
         {
             "name": "SimCLR",
@@ -33,7 +34,7 @@
             "module": "torch.distributed.launch",            
             "console": "integratedTerminal",
             "args": [
-                "--nproc_per_node=1",                
+                "--master_port=12384",                
                 "${workspaceFolder}/main_pretrain.py",
                 "--batch_size=500", "--opt=adamw", "--blr=5e-4", "--epochs=100", 
                 "--data_path=../data/", "--data_set=cifar10",
@@ -42,18 +43,17 @@
             ],
         },
         {
-            "name": "amae",
+            "name": "tmae",
             "type": "debugpy",
             "request": "launch",
             "module": "torch.distributed.launch",            
             "console": "integratedTerminal",
             "args": [
-                "--nproc_per_node=1",                
+                "--master_port=12384",                
                 "${workspaceFolder}/main_pretrain.py",
-                "--batch_size=20", "--opt=adamw", "--blr=5e-4", "--epochs=100", 
-                "--data_path=../data/", "--data_set=cifar10",
-                "--cfgs", "${workspaceFolder}/configs/cifar.gin", 
-                "--gin", "build_dataset.transform_fn=@SimpleAugmentation", "SimpleAugmentation.img_size=32", "build_model.model_fn=@amae_tiny", "build_model.patch_size=4", "build_model.img_size=32", "build_model.decoder_patch_size=2"
+                "--batch_size=512", "--opt=adamw", "--blr=1e-4", "--epochs=100", "--num_workers=0",
+                "--data_path=/high_perf_store3/l3_data/gent/data/IN1K",                 
+                "--gin", "build_dataset.transform_fn=@SimpleAugmentation", "build_model.model_fn=@tmae_base",
             ],
         },
         {

@@ -2,8 +2,12 @@
 Reference: https://github.com/facebookresearch/moco-v3
 
 # Note
-- Projector: a MLP ending with BN. 2048-4096-256
+MoCo v3 consists of backbone, projector, predictor, and their momentum version, where projector is updated by EMA, predictor is learnable. There are following key points
+
+- Normalization Layer at the end of Projector: 2048-4096-4096-256-BN or LN
 - Predictor: a MLP ending without BN. 256-4096-256
+- parameter group?
+
 
 ## [train](https://github.com/facebookresearch/moco-v3/blob/main/CONFIG.md)
 
@@ -14,32 +18,26 @@ torchrun --nproc_per_node=8 main_pretrain_ema.py --batch_size=128 --opt LARS --b
 
 ViT-Base, 1-node (8-GPU) pre-training (bs=4K).
 ```
-torchrun --nproc_per_node=8 main_pretrain_ema.py --batch_size=512 --opt adamw --blr=1.5e-4 --opt_betas 0.9 0.95 --weight_decay=.1 \
-    --epochs=300 --warmup_epochs=40 --ckpt_freq=20 --data_path $FFCVTRAIN \
-    -m 0.99 --gin build_dataset.transform_fn=@MultiviewPipeline build_model.model_fn=@MoCo MoCo.T=0.2 MoCo.stop_grad=True MoCo.embed_dim=768 create_backbone.name=\"vit_base_patch16_224\" 
+torchrun --nproc_per_node=8 main_pretrain_ema.py --batch_size=512 --opt adamw --blr=1.5e-4 --opt_betas 0.9 0.999 --weight_decay=.1 \
+    --epochs=300 --warmup_epochs=40 --ckpt_freq=20 --data_path $IMNET \
+    -m 0.99 --gin build_dataset.transform_fn=@DataAugmentationDINO DataAugmentationDINO.local_crops_number=0 build_model.model_fn=@MoCo MoCo.T=0.2 MoCo.stop_grad=True MoCo.embed_dim=768 create_backbone.name=\"vit_base_patch16_224\" 
 ```
 
-## network
-MoCo v3 consists of backbone $f(*)$, projector $f_q(*)$, predictor $f_k(*)$, and their momentum version, where projector is updated by EMA, predictor is learnable. 
-
-q = f_q(f_k(f(x))), k =g_k(g(x)).
-
-The projector is crutial for the performance improvement refer to SimCLR.
-
-The predictor has no BN at the end.
-
-SyncBN is also beneficial.
-
-## momentum encoder
-
-
-# Result:
+# Official Result:
 | Model    | pretrain epochs | pretrain crops | linear acc |   |
 |----------|:---------------:|:--------------:|:----------:|:-:|
 | resnet50 | 100             | 2x224          | 68.9       |   |
 | resnet50 | 300             | 2x224          | 72.8       |   |
 | resnet50 | 1000            | 2x224          | 74.6       |   |
-|          |                 |                |            |   |
+
+# our impl. 
+CIFAR10(k=10),vit_base
+- orig: 95
+- FFCV, bs=4k: 74.96
+- IF, bs=2K: 91.68
+- IF, weight init,bs=4k: 92.4
+- optim: 
+
 """
 
 from copy import deepcopy
@@ -50,6 +48,54 @@ import gin
 
 from layers.backbone import create_backbone
 from layers.operation import build_head, contrastive_loss
+
+import math
+from functools import partial, reduce
+from operator import mul
+
+
+def mocov3_init(model, stop_grad_conv1=True, ):
+    # Use fixed 2D sin-cos position embedding
+    build_2d_sincos_position_embedding(model)
+
+    # weight initialization
+    for name, m in model.named_modules():
+        if isinstance(m, nn.Linear):
+            if 'qkv' in name:
+                # treat the weights of Q, K, V separately
+                val = math.sqrt(6. / float(m.weight.shape[0] // 3 + m.weight.shape[1]))
+                nn.init.uniform_(m.weight, -val, val)
+            else:
+                nn.init.xavier_uniform_(m.weight)
+            nn.init.zeros_(m.bias)
+    nn.init.normal_(model.cls_token, std=1e-6)
+
+    # xavier_uniform initialization
+    val = math.sqrt(6. / float(3 * reduce(mul, model.patch_embed.patch_size, 1) + model.embed_dim))
+    nn.init.uniform_(model.patch_embed.proj.weight, -val, val)
+    nn.init.zeros_(model.patch_embed.proj.bias)
+
+    if stop_grad_conv1:
+        model.patch_embed.proj.weight.requires_grad = False
+        model.patch_embed.proj.bias.requires_grad = False
+
+def build_2d_sincos_position_embedding(model, temperature=10000.):
+    h, w = model.patch_embed.grid_size
+    grid_w = torch.arange(w, dtype=torch.float32)
+    grid_h = torch.arange(h, dtype=torch.float32)
+    grid_w, grid_h = torch.meshgrid(grid_w, grid_h)
+    assert model.embed_dim % 4 == 0, 'Embed dimension must be divisible by 4 for 2D sin-cos position embedding'
+    pos_dim = model.embed_dim // 4
+    omega = torch.arange(pos_dim, dtype=torch.float32) / pos_dim
+    omega = 1. / (temperature**omega)
+    out_w = torch.einsum('m,d->md', [grid_w.flatten(), omega])
+    out_h = torch.einsum('m,d->md', [grid_h.flatten(), omega])
+    pos_emb = torch.cat([torch.sin(out_w), torch.cos(out_w), torch.sin(out_h), torch.cos(out_h)], dim=1)[None, :, :]
+
+    model.pos_embed[:,1:].data = pos_emb
+    model.pos_embed.requires_grad = False
+
+
 
 @gin.configurable
 class MoCo(nn.Module):
@@ -75,11 +121,12 @@ class MoCo(nn.Module):
 
         # build encoders
         backbone = create_backbone()
+        mocov3_init(backbone, stop_grad_conv1=stop_grad)
         if stop_grad and hasattr(backbone, 'patch_embed'):
             backbone.patch_embed.requires_grad_(False)            
         
         self.embed_dim = embed_dim
-        projector = build_head(2,embed_dim,mlp_dim,out_dim)
+        projector = build_head(3,embed_dim,mlp_dim,out_dim)
         self.student = nn.Sequential(backbone,                                     
                                      projector)
 
@@ -189,5 +236,11 @@ class ConvStem(nn.Module):
             x = x.flatten(2).transpose(1, 2)  # BCHW -> BNC
         x = self.norm(x)
         return x
-        x = self.norm(x)
-        return x
+
+if __name__ == '__main__':
+    x = torch.randn(2,3,224,224)
+    gin.parse_config([
+        "create_backbone.name='vit_base_patch16_224'",
+    ])
+    model = MoCo(embed_dim=768, out_dim=256, mlp_dim=4096, stop_grad=True)
+    model([x,x])

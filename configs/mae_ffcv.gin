@@ -1,6 +1,6 @@
 # Parameters for build_dataset:
 # ==============================================================================
-# build_dataset.transform_fn = @SimplePipeline
+build_dataset.transform_fn = @SimplePipeline
 
 # Parameters for build_model:
 # ==============================================================================
@@ -14,15 +14,15 @@ tiny/MaskedAutoencoderViT.patch_size=16
 tiny/MaskedAutoencoderViT.embed_dim=192
 tiny/MaskedAutoencoderViT.depth=12
 tiny/MaskedAutoencoderViT.num_heads=12
-tiny/MaskedAutoencoderViT.decoder_embed_dim=96
-tiny/MaskedAutoencoderViT.decoder_depth=1
-tiny/MaskedAutoencoderViT.decoder_num_heads=3
+tiny/MaskedAutoencoderViT.decoder_embed_dim=384
+tiny/MaskedAutoencoderViT.decoder_depth=4
+tiny/MaskedAutoencoderViT.decoder_num_heads=12
 
 small/MaskedAutoencoderViT.img_size=224
 small/MaskedAutoencoderViT.patch_size=16
 small/MaskedAutoencoderViT.embed_dim=384
 small/MaskedAutoencoderViT.depth=12
-small/MaskedAutoencoderViT.num_heads=6
+small/MaskedAutoencoderViT.num_heads=12
 small/MaskedAutoencoderViT.decoder_embed_dim=512
 small/MaskedAutoencoderViT.decoder_depth=4
 small/MaskedAutoencoderViT.decoder_num_heads=16
@@ -31,7 +31,7 @@ base/MaskedAutoencoderViT.img_size=224
 base/MaskedAutoencoderViT.patch_size=16
 base/MaskedAutoencoderViT.embed_dim=768
 base/MaskedAutoencoderViT.depth=12
-base/MaskedAutoencoderViT.num_heads=6
+base/MaskedAutoencoderViT.num_heads=12
 base/MaskedAutoencoderViT.decoder_embed_dim=512
 base/MaskedAutoencoderViT.decoder_depth=8
 base/MaskedAutoencoderViT.decoder_num_heads=16
@@ -40,7 +40,7 @@ large/MaskedAutoencoderViT.img_size=224
 large/MaskedAutoencoderViT.patch_size=16
 large/MaskedAutoencoderViT.embed_dim=1024
 large/MaskedAutoencoderViT.depth=24
-large/MaskedAutoencoderViT.num_heads=8
+large/MaskedAutoencoderViT.num_heads=16
 large/MaskedAutoencoderViT.decoder_embed_dim=512
 large/MaskedAutoencoderViT.decoder_depth=8
 large/MaskedAutoencoderViT.decoder_num_heads=16

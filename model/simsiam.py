@@ -15,6 +15,12 @@ Warning: Not working with ViT.
 - BN: adding BN to the hidden layers is vital to the success of learning semantic representation. However, adding BN to the output of predictor will cause unstable training and the loss oscillates. 
 - Hypothesis: The presence of stop-gradient is the consequence of introducing the extra set of variables.
 
+# training script
+```python
+torchrun --nproc_per_node=8 main_pretrain.py --batch_size=512 --opt sgd --blr=0.05 --weight_decay=1e-4 \
+    --epochs=110 --warmup_epochs=10 --ckpt_freq=10 --data_set ffcv --data_path $FFCVTRAIN \
+    --gin build_dataset.transform_fn=@MultiviewPipeline build_model.model_fn=@SimSiam create_backbone.name=\"resnet50\" 
+```
 
 # Result:
 
@@ -55,13 +61,10 @@ class SimSiam(nn.Module):
             nn.BatchNorm1d(proj_dim, affine=False),
         )
         
-
-        
         self.predictor = nn.Sequential(
             nn.Linear(proj_dim, mlp_dim, bias=False),
             nn.BatchNorm1d(mlp_dim),
-            nn.ReLU(), 
-            # nn.Softmax(), # simulate class centroid selection
+            nn.ReLU(inplace=True), 
             nn.Linear(mlp_dim, proj_dim)) # output layer        
         self.criterion = nn.CosineSimilarity(dim=1)
 
@@ -102,8 +105,8 @@ class SimSiam(nn.Module):
         self.log["loss"] = loss.item()
         self.log['qk@sim'] = self.criterion(p1.detach(), z1.detach()).mean().item()
         with torch.no_grad():
-            
             self.log['qk@sim'] = F.cosine_similarity(p1,z1).mean().item()
             self.log['z@sim'] = F.cosine_similarity(p1,z2).mean().item()
+        
         return loss, self.log
         

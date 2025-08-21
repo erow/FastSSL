@@ -28,8 +28,8 @@ docker pull ghcr.io/erow/aisurrey-docker:sha256-d835a01e444257345d78c95cec157eb6
 To train a MAE, you can run the following command
 ```bash 
 torchrun --nproc_per_node 8 main_pretrain.py  --data_path=${train_path} --data_set=ffcv \
-    --epochs 800 --warmup_epochs 40 --blr 1.5e-4 --weight_decay 0.05 --batch_size 512\
-    --cfgs configs/mae_ffcv.gin --gin build_model.model_fn=@base/MaskedAutoencoderViT build_dataset.transform_fn=@SimplePipeline  --ckpt_freq=100 --output_dir outputs/IN1K_base 
+    --epochs 800 --warmup_epochs 40 --blr 1.5e-4 --weight_decay 0.05 --opt_betas 0.9 0.95 --batch_size 512\
+    --cfgs configs/mae_ffcv.gin --gin build_model.model_fn=@base/MaskedAutoencoderViT   --ckpt_freq=100 --output_dir outputs/IN1K_base 
 ```
 Optional arguments: `--compile` to compile the model, `--ckpt_freq` to save checkpoints every `ckpt_freq` epochs, `--online_prob` to evaluate the linear classifier during training.
 

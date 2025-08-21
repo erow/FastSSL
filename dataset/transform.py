@@ -93,7 +93,7 @@ class SimpleAugmentation(nn.Module):
 
 @gin.configurable()
 class DataAugmentationDINO(nn.Module):
-    def __init__(self,img_size=224, global_crops_scale=(0.4, 1.), local_crops_scale=(0.05, 0.4), local_crops_number=8, color_jitter=True,
+    def __init__(self,img_size=224, global_crops_scale=(0.4, 1.), local_crops_scale=(0.05, 0.4), local_crops_number=8, 
                  mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]):
         """Multi-view data augmentation.
 
@@ -125,14 +125,14 @@ class DataAugmentationDINO(nn.Module):
         self.global_transfo1 = Compose([
             RandomResizedCrop(img_size, scale=global_crops_scale, interpolation=Image.BICUBIC),
             flip_and_color_jitter,
-            GaussianBlur(5),
+            GaussianBlur(1.0),
             normalize,
         ])
         # second global crop
         self.global_transfo2 = Compose([
             RandomResizedCrop(img_size, scale=global_crops_scale, interpolation=Image.BICUBIC),
             flip_and_color_jitter,
-            GaussianBlur(5),
+            GaussianBlur(0.1),
             Solarization(0.2),
             normalize,
         ])
@@ -141,7 +141,7 @@ class DataAugmentationDINO(nn.Module):
         self.local_transfo = Compose([
             RandomResizedCrop(96, scale=local_crops_scale, interpolation=Image.BICUBIC),
             flip_and_color_jitter,
-            RandomApply([GaussianBlur(5)],p=0.5),
+            GaussianBlur(0.5),
             normalize,
         ])
 

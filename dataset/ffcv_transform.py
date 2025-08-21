@@ -10,20 +10,20 @@ import torch
 import torchvision.transforms.v2 as tfms
 from torch import nn
 
-IMAGENET_MEAN = np.array([0.485, 0.456, 0.406]) * 255
-IMAGENET_STD = np.array([0.229, 0.224, 0.225]) * 255
 
 @gin.configurable
 def SimplePipeline(img_size=224,scale=(0.2,1), ratio=(3.0/4.0, 4.0/3.0),
-                 mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]):
+                 mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225],
+                 device='cuda',
+                 ):
+    MEAN = np.array([(255*i) for i in mean])
+    STD = np.array([(255*i) for i in std])
+    device = torch.device(device)
     image_pipeline = [
             RandomResizedCropRGBImageDecoder((img_size, img_size), scale=scale,ratio=ratio,),
-            RandomHorizontalFlip(),            
-            ToTensor(), 
-            ToDevice(torch.device('cuda')),
-            ToTorchImage(),
-            Convert(torch.float16),
-            Normalize(mean=[255*i for i in mean], std=[255*i for i in std], inplace=True),
+            RandomHorizontalFlip(),          
+            NormalizeImage(MEAN, STD, np.float32),  
+            ToTensor(),  ToTorchImage(),
             ]
     label_pipeline = [IntDecoder(), ToTensor(),ToDevice(device), View(-1)]
     # Pipeline for each data field
@@ -57,12 +57,16 @@ class ThreeAugmentation(nn.Module):
         return "GaussianBlur, Solarize, Grayscale"
         
 @gin.configurable
-def ThreeAugmentPipeline(img_size=224,scale=(0.08,1), color_jitter=None,device='cuda'):
+def ThreeAugmentPipeline(img_size=224,scale=(0.08,1), 
+                         mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225],
+                         color_jitter=None,device='cuda'):
     """
     ThreeAugmentPipeline: https://github.com/facebookresearch/deit/blob/main/augment.py
     """
     if not color_jitter is None: assert color_jitter >= 0 and color_jitter <= 1
     device = torch.device(device)
+    mean = np.array([int(255*i) for i in mean])
+    std = np.array([int(255*i) for i in std])
     image_pipeline = (
         # first_tfl 
         [   RandomResizedCropRGBImageDecoder((img_size, img_size), scale=scale,),
@@ -71,7 +75,7 @@ def ThreeAugmentPipeline(img_size=224,scale=(0.08,1), color_jitter=None,device='
         (   [RandomColorJitter(brightness=color_jitter, contrast=color_jitter, saturation=color_jitter,hue=0, p=0.5)] if color_jitter else []) + 
         # final_tfl
         [
-            NormalizeImage(IMAGENET_MEAN, IMAGENET_STD, np.float32),
+            NormalizeImage(mean, std, np.float32),
             ToTensor(), ToTorchImage(),
             ToDevice(device),
             ThreeAugmentation(),
@@ -86,13 +90,17 @@ def ThreeAugmentPipeline(img_size=224,scale=(0.08,1), color_jitter=None,device='
     return pipelines   
 
 @gin.configurable
-def ColorJitterPipeline(img_size=224,scale=(0.08, 1.0),device='cuda'):
+def ColorJitterPipeline(img_size=224,scale=(0.08, 1.0),
+                        mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225],
+                        device='cuda'):
     device = torch.device(device)
+    mean = np.array([int(255*i) for i in mean])
+    std = np.array([int(255*i) for i in std])
     image_pipeline = [
         RandomHorizontalFlip(),
         RandomColorJitter(0.8, 0.4, 0.4, 0.2, p=0.1),
         RandomSolarization(128,p=0.2),
-        NormalizeImage(IMAGENET_MEAN, IMAGENET_STD, np.float32),
+        NormalizeImage(mean, std, np.float32),
         ToTensor(), ToTorchImage(),
         ToDevice(device,non_blocking=True),
         tfms.RandomGrayscale(p=0.1),
@@ -109,14 +117,16 @@ def ColorJitterPipeline(img_size=224,scale=(0.08, 1.0),device='cuda'):
 
 @gin.configurable
 def MultiviewPipeline(img_size=224,scale=(0.4, 1.0),local_crops_number=0,
+                      mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225],
                       local_img_size=96,device='cuda'):
     k = local_img_size/img_size
-    local_scale=(scale[0]*k, scale[1]*k)
-    
+    local_scale=(scale[0]*k, scale[1]*k) # (0.17, 0.42)
+    mean = np.array([int(255*i) for i in mean])
+    std = np.array([int(255*i) for i in std])
     image_pipeline = [
         RandomHorizontalFlip(),
-        RandomColorJitter(0.8, 0.4, 0.4, 0.2, p=0.1),
-        NormalizeImage(IMAGENET_MEAN, IMAGENET_STD, np.float32),
+        RandomColorJitter(0.4, 0.4, 0.2, 0.1, p=0.8),
+        NormalizeImage(mean, std, np.float32),
         ToTensor(), ToTorchImage(),
         ToDevice(torch.device(device),non_blocking=True),
         tfms.RandomGrayscale(p=0.1),
@@ -124,69 +134,22 @@ def MultiviewPipeline(img_size=224,scale=(0.4, 1.0),local_crops_number=0,
     ]
     image_pipeline2 = [
         RandomHorizontalFlip(),
-        RandomColorJitter(0.8, 0.4, 0.4, 0.2, p=0.1),
-        NormalizeImage(IMAGENET_MEAN, IMAGENET_STD, np.float32),
+        RandomColorJitter(0.4, 0.4, 0.2, 0.1, p=0.8),
+        NormalizeImage(mean, std, np.float32),
         ToTensor(), ToTorchImage(),
-        Convert(torch.float16),
+        # Convert(torch.float16),
         ToDevice(torch.device(device),non_blocking=True),
         tfms.RandomGrayscale(p=0.1),
-        tfms.GaussianBlur(3, sigma=(0.1, 2)),
-        tfms.RandomSolarize(0,0.2), # asymmetric augmentation
+        tfms.GaussianBlur(3, sigma=(0.1, 2)), # Todo: p=0.1
+        tfms.RandomSolarize(0,p=0.2), # asymmetric augmentation
     ]
     def _local_pipeline():
         return [
             RandomHorizontalFlip(),
             RandomColorJitter(0.8, 0.4, 0.4, 0.2, 0.1),
-            NormalizeImage(IMAGENET_MEAN, IMAGENET_STD, np.float32),
+            NormalizeImage(mean, std, np.float32),
             ToTensor(), ToTorchImage(),
-            Convert(torch.float16),
-            ToDevice(torch.device(device),non_blocking=True),
-        ]
-    label_pipeline = [IntDecoder(), ToTensor(),View(-1)]
-    # Pipeline for each data field
-    from ffcv.pipeline import PipelineSpec
-    pipelines = {
-        'image': PipelineSpec("image",RandomResizedCropRGBImageDecoder((img_size, img_size),scale=scale),transforms=image_pipeline),
-        'image2': PipelineSpec("image",RandomResizedCropRGBImageDecoder((img_size, img_size),scale=scale),transforms=image_pipeline2),        
-    } 
-    for i in range(local_crops_number):
-        pipelines[f"local_{i}"] = PipelineSpec("image",RandomResizedCropRGBImageDecoder((local_img_size, local_img_size),scale=local_scale),transforms=_local_pipeline())
-    pipelines['label'] = label_pipeline
-    return pipelines
-
-@gin.configurable
-def MultiviewPipeline(img_size=224,scale=(0.4, 1.0),local_crops_number=8,
-                      local_img_size=96,
-                      mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]):
-    mean=np.array(mean)*255
-    std = np.array(std)*255
-    k = local_img_size/img_size
-    local_scale=(scale[0]*k, scale[1]*k)
-    
-    image_pipeline = [
-        RandomHorizontalFlip(),
-        NormalizeImage(IMAGENET_MEAN, IMAGENET_STD, np.float32),
-        ToTensor(), ToTorchImage(),
-        ToDevice(torch.device(device),non_blocking=True),
-    ]
-    image_pipeline2 = [
-        RandomHorizontalFlip(),
-        RandomColorJitter(0.8, 0.4, 0.4, 0.2, p=0.1),
-        NormalizeImage(IMAGENET_MEAN, IMAGENET_STD, np.float32),
-        ToTensor(), ToTorchImage(),
-        Convert(torch.float16),
-        ToDevice(torch.device(device),non_blocking=True),
-        tfms.RandomGrayscale(p=0.1),
-        tfms.GaussianBlur(3, sigma=(0.1, 2)),
-        tfms.RandomSolarize(0,0.2), # asymmetric augmentation
-    ]
-    def _local_pipeline():
-        return [
-            RandomHorizontalFlip(),
-            RandomColorJitter(0.8, 0.4, 0.4, 0.2, 0.1),
-            NormalizeImage(IMAGENET_MEAN, IMAGENET_STD, np.float32),
-            ToTensor(), ToTorchImage(),
-            Convert(torch.float16),
+            # Convert(torch.float16),
             ToDevice(torch.device(device),non_blocking=True),
         ]
     label_pipeline = [IntDecoder(), ToTensor(),View(-1)]

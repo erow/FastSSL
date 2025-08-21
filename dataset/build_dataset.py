@@ -9,7 +9,7 @@ from torchvision.datasets import VisionDataset
 from torchvision.datasets.folder import default_loader
 from typing import Any, Callable, cast, Dict, List, Optional, Tuple
 import os
-
+import dataset.ffcv_transform
 # from dataset.cache_dataset import CacheDataset
 
 from dataset.transform import SimpleAugmentation
@@ -125,14 +125,9 @@ def build_dataset(args,transform_fn=SimpleAugmentation,
     transform_train = transform_fn(mean=mean,std=std)
     args.data_set = args.data_set.lower()
     if args.data_set == 'imnet':
-        # simple augmentation
-        if cached:
-            samples,class_to_idx = find_samples(os.path.join(args.data_path,'train'))
-            dataset_train = CacheFolders('./',samples,class_to_idx,transform=transform_train)
-        else:
-            dataset_train = datasets.ImageFolder(os.path.join(args.data_path, 'train'), transform=transform_train)
+        dataset_train = datasets.ImageFolder(os.path.join(args.data_path, 'train'), transform=transform_train)
     elif args.data_set == 'ffcv':
-        from dataset.multiloader import MultiLoader, OrderOption
+        from dataset.multiloader import MultiLoader, OrderOption        
         order = OrderOption.RANDOM if args.distributed else OrderOption.QUASI_RANDOM
         dataset_train =  MultiLoader(args.data_path, pipelines=transform_train,
                             batch_size=args.batch_size, num_workers=args.num_workers,
