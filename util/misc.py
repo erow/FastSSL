@@ -17,6 +17,8 @@ import time
 from collections import defaultdict, deque
 from pathlib import Path
 
+import psutil
+
 import torch
 import torch.distributed as dist
 from torch import inf, nn
@@ -220,6 +222,28 @@ def save_on_master(*args, **kwargs):
         torch.save(*args, **kwargs)
 
 
+
+# The performance of the CPU mapping needs to be tested
+def set_cpu_affinity(local_rank):
+    LUMI_GPU_CPU_map = {
+        # A mapping from GCD to the closest CPU cores in a LUMI-G node
+        # Note that CPU cores 0, 8, 16, 24, 32, 40, 48, 56 are reserved for the
+        # system and not available for the user
+        # See https://docs.lumi-supercomputer.eu/hardware/lumig/
+        0: [49, 50, 51, 52, 53, 54, 55],
+        1: [57, 58, 59, 60, 61, 62, 63],
+        2: [17, 18, 19, 20, 21, 22, 23],
+        3: [25, 26, 27, 28, 29, 30, 31],
+        4: [1, 2, 3, 4, 5, 6, 7],
+        5: [9, 10, 11, 12, 13, 14, 15],
+        6: [33, 34, 35, 36, 37, 38, 39],
+        7: [41, 42, 43, 44, 45, 46, 47],
+    }
+    cpu_list = LUMI_GPU_CPU_map[local_rank]
+    print(f"(local {local_rank}) binding to cpus: {cpu_list}")
+    psutil.Process().cpu_affinity(cpu_list)
+
+
 def init_distributed_mode(args):
     if hasattr(args,'dist_on_itp') and args.dist_on_itp:
         args.rank = int(os.environ['OMPI_COMM_WORLD_RANK'])
@@ -250,10 +274,14 @@ def init_distributed_mode(args):
         args.dist_backend = 'nccl'
         print('| distributed init (rank {}): {}, gpu {}'.format(
             args.rank, args.dist_url, args.gpu), flush=True)
-        torch.distributed.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
-                                            world_size=args.world_size, rank=args.rank)
+        torch.distributed.init_process_group(backend=args.dist_backend, 
+                                            #  init_method=args.dist_url,
+                                            # world_size=args.world_size, rank=args.rank
+                                            )
         torch.distributed.barrier()
         setup_for_distributed(args.rank == 0)
+        
+        set_cpu_affinity(int(os.environ['LOCAL_RANK']))
     elif torch.backends.mps.is_available():
         args.device = 'mps'  # MPS uses a single GPU device
         args.distributed = False

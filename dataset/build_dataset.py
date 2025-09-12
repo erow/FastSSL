@@ -135,6 +135,8 @@ def build_dataset(args,transform_fn=SimpleAugmentation,
                             order=order, distributed=args.distributed,seed=args.seed)
     elif args.data_set == 'cifar10':        
         dataset_train = datasets.CIFAR10(root=args.data_path, train=True, download=True, transform=transform_train)
+    elif args.data_set == 'mnist':
+        dataset_train = datasets.MNIST(root=args.data_path, train=True, download=True, transform=transform_train)
     elif args.data_set == 'imnet64':
         dataset_train = H5File(args.data_path,transform=transform_train)
     return dataset_train
