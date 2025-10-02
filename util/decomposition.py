@@ -1,4 +1,9 @@
-import einops
+try:
+    import einops
+    EINOPS_AVAILABLE = True
+except ImportError:
+    EINOPS_AVAILABLE = False
+    einops = None
 import torch
 import numpy as np
 import matplotlib.pyplot as plt

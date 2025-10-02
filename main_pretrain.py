@@ -1,3 +1,6 @@
+from PIL import Image  # a trick to solve loading lib problem
+import dataset.ffcv_transform
+
 import argparse
 import datetime
 import json
@@ -12,7 +15,6 @@ import numpy as np
 import timm
 import torch
 import torch.backends.cudnn as cudnn
-from PIL import Image  # a trick to solve loading lib problem
 from torch.utils.tensorboard import SummaryWriter
 from util import misc
 import timm

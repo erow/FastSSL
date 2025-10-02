@@ -5,10 +5,13 @@ build_dataset.transform_fn = @MultiviewPipeline
 # Parameters for build_model:
 # ==============================================================================
 build_model.model_fn = @SimCLR
-
+create_backbone.name = "resnet50"
 # Parameters for SimCLR:
 # ==============================================================================
-
+SimCLR.out_dim = 256
+SimCLR.embed_dim = 2048
+SimCLR.mlp_dim = 2048
+SimCLR.temperature = 0.1
 
 # Parameters for MultiviewPipeline:
 # ==============================================================================

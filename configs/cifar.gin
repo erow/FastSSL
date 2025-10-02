@@ -1,5 +1,28 @@
+# Parameters for build_dataset:
+# ==============================================================================
 build_dataset.transform_fn=@DataAugmentationDINO
 build_dataset.mean=(0.4914, 0.4822, 0.4465)
 build_dataset.std=(0.2470, 0.2435, 0.2616)
 DataAugmentationDINO.img_size=32
+DataAugmentationDINO.global_crops_scale=(0.8, 1.0)
 DataAugmentationDINO.local_crops_number=0
+
+
+# Parameters for build_model:
+# ==============================================================================
+build_model.model_fn = @SimCLR
+create_backbone.name = "vit_tiny_patch16_224"
+# Parameters for SimCLR:
+# ==============================================================================
+SimCLR.out_dim = 256
+SimCLR.embed_dim = 2048
+SimCLR.mlp_dim = 2048
+SimCLR.temperature = 0.1
+
+# Parameters for ViT:
+# ==============================================================================
+ViT.img_size = 32
+ViT.patch_size = 2
+ViT.embed_dim = 192
+ViT.depth = 12
+ViT.num_heads = 12

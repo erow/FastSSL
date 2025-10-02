@@ -8,7 +8,12 @@ torchrun main_pretrain.py  --batch_size=512 --opt adamw --opt_betas 0.9 0.95 --b
 
 from functools import partial
 
-from einops import rearrange
+try:
+    from einops import rearrange
+    EINOPS_AVAILABLE = True
+except ImportError:
+    EINOPS_AVAILABLE = False
+    rearrange = None
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -196,9 +201,15 @@ class DiFormer(nn.Module):
             H = int(zl_local.shape[1]**.5)
             h = int(zs_local.shape[1]**.5)
             # interpolate zs local
-            zs_local_up = rearrange(zs_local, 'b (h w) d -> b d h w', h=h)
-            zs_local_up = F.interpolate(zs_local_up, size=(H, H), mode='bilinear', align_corners=False)
-            zs_local_up = rearrange(zs_local_up, 'b d h w -> b (h w) d')
+            if EINOPS_AVAILABLE:
+                zs_local_up = rearrange(zs_local, 'b (h w) d -> b d h w', h=h)
+                zs_local_up = F.interpolate(zs_local_up, size=(H, H), mode='bilinear', align_corners=False)
+                zs_local_up = rearrange(zs_local_up, 'b d h w -> b (h w) d')
+            else:
+                # Fallback without einops
+                zs_local_up = zs_local.view(B, h, h, -1).permute(0, 3, 1, 2)
+                zs_local_up = F.interpolate(zs_local_up, size=(H, H), mode='bilinear', align_corners=False)
+                zs_local_up = zs_local_up.permute(0, 2, 3, 1).view(B, H*H, -1)
 
         global_diff = zl_global - zs_global
         local_diff = zs_local_up - zl_local

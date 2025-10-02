@@ -133,10 +133,15 @@ def build_dataset(args,transform_fn=SimpleAugmentation,
                             batch_size=args.batch_size, num_workers=args.num_workers,
                             batches_ahead=4, 
                             order=order, distributed=args.distributed,seed=args.seed)
-    elif args.data_set == 'cifar10':        
+    elif args.data_set == 'cifar10':
         dataset_train = datasets.CIFAR10(root=args.data_path, train=True, download=True, transform=transform_train)
+    elif args.data_set == 'cifar100':
+        dataset_train = datasets.CIFAR100(root=args.data_path, train=True, download=True, transform=transform_train)
     elif args.data_set == 'mnist':
         dataset_train = datasets.MNIST(root=args.data_path, train=True, download=True, transform=transform_train)
+    elif args.data_set == 'twodigits':
+        from dataset.twodigits import TwoDigits
+        dataset_train = TwoDigits(root=args.data_path, num_digit=100, train=True, download=True, transform=transform_train)
     elif args.data_set == 'imnet64':
         dataset_train = H5File(args.data_path,transform=transform_train)
     return dataset_train

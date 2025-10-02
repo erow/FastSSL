@@ -15,22 +15,6 @@ Reference: https://github.com/google-research/simclr
 
 
 """
-"""
-Reference: https://github.com/google-research/simclr
-
-# Note
-
-## Keypoints in SimCLR
-
-- data augmentation: random cropping and random color distortion stand out.
-- Global BN (SyncBN): This operation aggregates BN mean and variance over all devices during the training.
-- Projector: a MLP with BN. By leveraging the nonlinear transformation g(·), more information can be formed and maintained in h. 2048-2048-256
-- Batch size: it is crucial for improving performance. BS=4096 achieves good results.
-- Epoch: Contrastive learning benefits (more) from larger batch sizes and longer training. At least 400 epochs.
-# Result
-
-
-"""
 import torch
 from torch import nn
 import torchvision.transforms as transforms
@@ -45,7 +29,7 @@ class SimCLR(nn.Module):
                  out_dim=256,
                  embed_dim=2048,
                  mlp_dim=2048, 
-                 temperature=0.5):
+                 temperature=0.1):
         super(SimCLR, self).__init__()
         self.temperature = temperature
         self.out_dim = out_dim

@@ -18,7 +18,7 @@ import numpy as np
 import torch
 from torch import nn
 import torch.distributed as dist
-from PIL import ImageFilter, ImageOps
+from PIL import ImageFilter, ImageOps, Image
 from torchvision import transforms
 from torchvision.transforms.v2 import Normalize, RandomResizedCrop, RandomHorizontalFlip, ColorJitter, ToTensor, RandomApply, RandomGrayscale, Compose, ToDtype
 import gin
@@ -83,13 +83,38 @@ class SimpleAugmentation(nn.Module):
                 ToTensor(),
                 # ToDevice('cuda'),
                 Normalize(mean=mean,std=std)])
-    def forward(self,x):
-        return self.transforms(x)
+    def forward(self,x: Image):
+        x = self.transforms(x)
+        
+        return x
     
     def change_resolution(self,img_size):
         decoder = self.transforms[0]
         decoder.size=(img_size,img_size)
 
+@gin.configurable()
+class SimpleContrast(nn.Module):
+    def __init__(self,img_size=224,scale=(0.2, 1.0),
+                 mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]):
+        super().__init__()
+         # simple augmentation
+        self.transforms = Compose([
+                RandomResizedCrop(img_size, scale=scale, interpolation=Image.BICUBIC),  # 3 is bicubic
+                # RandomHorizontalFlip(),
+                ToTensor(),
+                # ToDevice('cuda'),
+                Normalize(mean=mean,std=std)])
+    def forward(self,x: Image):
+        if isinstance(x, Image.Image) and x.mode != 'RGB':
+            x = x.convert('RGB')  # Convert grayscale or other modes to RGB
+        
+        x1 = self.transforms(x)
+        x2 = self.transforms(x)
+        return [x1,x2]
+    
+    def change_resolution(self,img_size):
+        decoder = self.transforms[0]
+        decoder.size=(img_size,img_size)
 
 @gin.configurable()
 class DataAugmentationDINO(nn.Module):

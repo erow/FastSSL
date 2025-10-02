@@ -1,10 +1,13 @@
 import math
-import einops
+
 import gin
 import torch
 from torch import nn
 from .operation import patchify, unpatchify
 from einops import rearrange
+import einops
+import numpy as np
+import torch.nn.functional as F
 
 @gin.configurable
 class TargetMSE(nn.Module):
@@ -109,8 +112,14 @@ class TargetSSIM(nn.Module):
         super().__init__()
         self.patch_size = patch_size
         self.ignore_mask = ignore_mask
-        from torchmetrics.image import ssim
-        self.ssim_loss = ssim.StructuralSimilarityIndexMeasure()
+        try:
+            from torchmetrics.image import ssim
+            self.ssim_loss = ssim.StructuralSimilarityIndexMeasure()
+            self.torchmetrics_available = True
+        except ImportError:
+            print("Warning: torchmetrics not available, TargetSSIM will use MSE loss instead")
+            self.torchmetrics_available = False
+            self.ssim_loss = None
     
     def forward(self, imgs, pred,mask=None):
         """
@@ -122,13 +131,23 @@ class TargetSSIM(nn.Module):
             pred = unpatchify(pred,self.patch_size)
         
         target = imgs      
-        if mask is None or self.ignore_mask:
-            loss = self.ssim_loss(pred,target)
+        if self.torchmetrics_available:
+            if mask is None or self.ignore_mask:
+                loss = self.ssim_loss(pred,target)
+            else:
+                mask = mask.unsqueeze(-1).expand(-1,-1,3 * self.patch_size**2)
+                mask = unpatchify(mask,self.patch_size)            
+                loss = self.ssim_loss(pred*mask,target*mask)
+            return 1 - loss
         else:
-            mask = mask.unsqueeze(-1).expand(-1,-1,3 * self.patch_size**2)
-            mask = unpatchify(mask,self.patch_size)            
-            loss = self.ssim_loss(pred*mask,target*mask)
-        return 1 - loss
+            # Fallback to MSE loss
+            if mask is None or self.ignore_mask:
+                loss = F.mse_loss(pred, target)
+            else:
+                mask = mask.unsqueeze(-1).expand(-1,-1,3 * self.patch_size**2)
+                mask = unpatchify(mask,self.patch_size)
+                loss = F.mse_loss(pred*mask, target*mask)
+            return loss
 
 
 def get_gkern(kernlen, std):
@@ -223,7 +242,16 @@ class TargetHOG(nn.Module):
             pred = patchify(pred,self.patch_size)
         
         hog_feat = self.hog(imgs) # [N, 3, Orientation, H, W]
-        hog_feat = einops.rearrange(hog_feat,'n l c (h p1) (w p2) -> n (h w) (l c p1 p2)',p1=self.feat_size,p2=self.feat_size) # [N,L, C]
+        if EINOPS_AVAILABLE:
+            hog_feat = einops.rearrange(hog_feat,'n l c (h p1) (w p2) -> n (h w) (l c p1 p2)',p1=self.feat_size,p2=self.feat_size) # [N,L, C]
+        else:
+            # Fallback without einops
+            n, l, c, h_p, w_p = hog_feat.shape
+            h = h_p // self.feat_size
+            w = w_p // self.feat_size
+            hog_feat = hog_feat.view(n, l, c, h, self.feat_size, w, self.feat_size)
+            hog_feat = hog_feat.permute(0, 3, 5, 1, 2, 4, 6).contiguous()
+            hog_feat = hog_feat.view(n, h*w, l*c*self.feat_size*self.feat_size)
         
         loss = (pred - hog_feat) ** 2
         loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
