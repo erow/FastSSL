@@ -15,17 +15,31 @@ from layers.backbone import create_backbone
 def multipos_ce_loss(logits, pos_mask,exclude_mask=None):
     if exclude_mask is None:
         exclude_mask = pos_mask
-    logits = logits - logits.mean(1,keepdim=True)
-    similarity = logits.exp()
-    N = similarity.size(0)
+    logits = logits - logits.mean(1,keepdim=True).detach()
+    score = logits.exp()
+    N = score.size(0)
  
     # InfoNCE loss 
     ## exclude the positives and class pairs
-    neg = (similarity*(~exclude_mask)).sum(1,keepdim=True)
-    loss = torch.sum(pos_mask* (torch.log(similarity + neg) - logits))/pos_mask.sum()
+    neg = (score*(~exclude_mask)).sum(1,keepdim=True)
+    loss = torch.sum(pos_mask* (torch.log(score + neg) - logits))/pos_mask.sum()
     loss = loss.mean()
    
     return loss
+
+def apply_gate(gate, x1, x2):
+    x1 = torch.einsum("bk,bk->bk",x1,gate)
+    x2 = torch.einsum("nk,bk->bnk",x2,gate)
+    x1 =  F.normalize(x1,p=2,dim=-1)
+    x2 =  F.normalize(x2,p=2,dim=-1)
+    return x1, x2
+
+def contrast(x1,x2):
+    if x2.dim() == 3:
+        logits =  torch.einsum("bj,bnj->bn",x1,x2)
+    else:
+        logits = x1 @ x2.t()
+    return logits
 
 @gin.configurable()
 class OpenGate(nn.Module):
@@ -185,16 +199,26 @@ class SimLAP(nn.Module):
                  out_dim=256,
                  embed_dim=2048,
                  mlp_dim=2048, 
-                 temperature=0.5,
-                 num_classes=1000):
+                 type='arbitrary',
+                 temperature=0.1,
+                 num_classes=1000,
+                 alpha = 0,
+                 ):
         super(SimLAP, self).__init__()
+        self.num_classes = num_classes
+        assert type in ['arbitrary','identical','distinct']
         self.scale_logit = nn.Parameter(torch.zeros(1)+np.log(1/temperature))
         self.out_dim = out_dim
-        
+        self.type = type
+        if alpha is None:
+            self.alpha = 0
+        else:
+            self.alpha = nn.Parameter(torch.tensor(alpha))
         self.embed_dim = embed_dim
         self.backbone = create_backbone()
         self.projector = build_head(2,embed_dim,mlp_dim,out_dim, last_norm='ln')
-        self.filter = Filter(num_classes=num_classes,embed_dim=out_dim)
+        # self.filter = Filter(num_classes=num_classes,embed_dim=out_dim)
+        self.filter = BasicGate(out_dim, num_classes=num_classes)
 
     @torch.no_grad()
     def representation(self, x):
@@ -215,27 +239,43 @@ class SimLAP(nn.Module):
         z2 = self.projector(self.backbone(x2))
         
         y1 = targets
-        y2 = targets[torch.randperm(len(targets),device=targets.device)]
+        if self.type == 'identical':
+            y2 = targets
+        elif self.type == 'distinct':
+            y2 = (targets + torch.randint(1,self.num_classes,(len(targets),),device=targets.device))%self.num_classes
+        elif self.type == 'arbitrary':
+            y2 = targets[torch.randperm(len(targets),device=targets.device)]
+        else:
+            raise ValueError(f"Invalid type: {self.type}")
 
-        loss = (self.disparate_loss(z1,z2,y1,y2)+
-                self.disparate_loss(z2,z1,y2,y1))/2
+        loss = self.disparate_loss(z1,z2,y1,y2)
 
         self.log['z@sim'] = F.cosine_similarity(z1,z2).mean().item()
 
         return loss, self.log
     
-    
+   
     def disparate_loss(self, z1, k2, y1, posy):
-        k2 = concat_all_gather(k2)
-        fz1,fz2 = self.filter(z1, k2, y1,posy)
-        
+        k2 = concat_all_gather_grad(k2)
+        gate = self.filter(y1,posy)
+        z1 = F.normalize(z1,p=2,dim=-1)
+        k2 = F.normalize(k2,p=2,dim=-1)
         scale = self.scale_logit.exp()
-        logits = scale * self.filter.contrast(fz1,fz2)
-        
-        
-        c1_mask = (y1.unsqueeze(1) == concat_all_gather(y1).unsqueeze(0)) # exclude samples from y1
-        c2_mask = (posy.unsqueeze(1) == concat_all_gather(y1).unsqueeze(0)) # exclude samples from y2
+        logits = contrast(z1*gate*gate,k2) * scale 
+        # fz1,fz2 = apply_gate(gate, z1, k2)
+        # logits = contrast(fz1,fz2) * self.s
+        if self.alpha > 0:
+            logits = logits - self.alpha * contrast(z1,k2)
+
+        all_y1 = concat_all_gather(y1)
+        c1_mask = (y1.unsqueeze(1) == all_y1.unsqueeze(0)) # exclude samples from y1
+        c2_mask = (posy.unsqueeze(1) == all_y1.unsqueeze(0)) # exclude samples from y2
         class_mask = c1_mask|c2_mask
 
-        loss = multipos_ce_loss(logits,c2_mask,class_mask)
+        loss = multipos_ce_loss(logits, c2_mask, class_mask)
+        
+        self.log['activation'] = gate.sum(1).mean().item()
+        entropy = torch.distributions.Bernoulli(gate).entropy().mean()
+        self.log['entropy'] = entropy.item()
+        self.log['scale'] = scale.item()
         return loss
