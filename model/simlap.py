@@ -210,10 +210,10 @@ class SimLAP(nn.Module):
         self.scale_logit = nn.Parameter(torch.zeros(1)+np.log(1/temperature))
         self.out_dim = out_dim
         self.type = type
-        if alpha is None:
-            self.alpha = 0
-        else:
+        if alpha > 0:
             self.alpha = nn.Parameter(torch.tensor(alpha))
+        else:
+            self.alpha = None
         self.embed_dim = embed_dim
         self.backbone = create_backbone()
         self.projector = build_head(2,embed_dim,mlp_dim,out_dim, last_norm='ln')
@@ -264,7 +264,7 @@ class SimLAP(nn.Module):
         logits = contrast(z1*gate*gate,k2) * scale 
         # fz1,fz2 = apply_gate(gate, z1, k2)
         # logits = contrast(fz1,fz2) * self.s
-        if self.alpha > 0:
+        if self.alpha is not None:
             logits = logits - self.alpha * contrast(z1,k2)
 
         all_y1 = concat_all_gather(y1)
