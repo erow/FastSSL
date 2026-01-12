@@ -53,6 +53,7 @@ def get_args_parser():
     parser.add_argument("--no_wandb", default=False, action="store_true", help="Use wandb for logging.")
     parser.add_argument("--dynamic_resolution", default=False, action="store_true", help="Use dynamic resolution.")
     parser.add_argument("--prob", default=False, action='store_true')
+    parser.add_argument("--line_prob", default=False, action='store_true', help="Use linear probability evaluation during training.")
     
     # Model parameters
     parser.add_argument("--compile", default=False, action="store_true", help="Compile the module or not.")
@@ -89,6 +90,8 @@ def get_args_parser():
     parser.add_argument('--data_set', default='imnet', help='dataset name, one of {imnet, ffcv, cifar10}')
     parser.add_argument('--data_path', default='/datasets01/imagenet_full_size/061417/', type=str,
                         help='dataset path')
+    parser.add_argument('--val_data_path', default=None, type=str,
+                        help='validation dataset path for linear probing evaluation')
 
     parser.add_argument('--output_dir', default=None, type=str,
                         help='path where to save, empty for no saving')
@@ -354,7 +357,13 @@ def train(args, data_loader_train,model):
     if args.prob:
         from util.clustering import KmeansProb        
         online_prob = KmeansProb(model_without_ddp.representation,
-            num_clusters=args.num_classes) 
+            num_clusters=args.num_classes)
+    elif args.line_prob:
+        if args.val_data_path is None:
+            raise ValueError("--val_data_path must be provided when using --line_prob")
+        from util.prob import LinearProb, build_representations_fn
+        names, representations_fn = build_representations_fn(model_without_ddp)
+        online_prob = LinearProb(args.val_data_path, names, representations_fn, num_classes=args.num_classes)
     else:
         online_prob = None
         
