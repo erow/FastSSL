@@ -1,0 +1,94 @@
+# Configuration for DiffMAE (Diffusion Models as Masked Autoencoders)
+# Reference: https://arxiv.org/abs/2304.03283
+#
+# Training example:
+# torchrun --nproc_per_node=8 main_pretrain.py \
+#     --data_path=$FFCVTRAIN --data_set=ffcv \
+#     --epochs 1600 --warmup_epochs 40 \
+#     --opt adamw --opt_betas 0.9 0.95 \
+#     --blr 1.5e-4 --weight_decay 0.05 \
+#     --batch_size 256 \
+#     --gin configs/diffmae_ffcv.gin \
+#     --ckpt_freq=100
+
+# Parameters for build_dataset:
+# ==============================================================================
+build_dataset.transform_fn = @SimplePipeline
+
+# Parameters for build_model:
+# ==============================================================================
+build_model.model_fn = @base/diffmae_base
+
+# Parameters for DiffusionMaskedAutoencoderViT:
+# ==============================================================================
+
+# Tiny model - 5.7M parameters
+tiny/diffmae_tiny.img_size = 224
+tiny/diffmae_tiny.patch_size = 16
+tiny/diffmae_tiny.embed_dim = 192
+tiny/diffmae_tiny.depth = 12
+tiny/diffmae_tiny.num_heads = 3
+tiny/diffmae_tiny.decoder_embed_dim = 96
+tiny/diffmae_tiny.decoder_depth = 4
+tiny/diffmae_tiny.decoder_num_heads = 3
+tiny/diffmae_tiny.mask_ratio = 0.75
+tiny/diffmae_tiny.num_diffusion_timesteps = 1000
+tiny/diffmae_tiny.diffusion_schedule = "cosine"
+
+# Small model - 22M parameters
+small/diffmae_small.img_size = 224
+small/diffmae_small.patch_size = 16
+small/diffmae_small.embed_dim = 384
+small/diffmae_small.depth = 12
+small/diffmae_small.num_heads = 6
+small/diffmae_small.decoder_embed_dim = 192
+small/diffmae_small.decoder_depth = 4
+small/diffmae_small.decoder_num_heads = 6
+small/diffmae_small.mask_ratio = 0.75
+small/diffmae_small.num_diffusion_timesteps = 1000
+small/diffmae_small.diffusion_schedule = "cosine"
+
+# Base model - 86M parameters (recommended)
+base/diffmae_base.img_size = 224
+base/diffmae_base.patch_size = 16
+base/diffmae_base.embed_dim = 768
+base/diffmae_base.depth = 12
+base/diffmae_base.num_heads = 12
+base/diffmae_base.decoder_embed_dim = 384
+base/diffmae_base.decoder_depth = 8
+base/diffmae_base.decoder_num_heads = 12
+base/diffmae_base.mask_ratio = 0.75
+base/diffmae_base.num_diffusion_timesteps = 1000
+base/diffmae_base.diffusion_schedule = "cosine"
+
+# Large model - 304M parameters
+large/diffmae_large.img_size = 224
+large/diffmae_large.patch_size = 16
+large/diffmae_large.embed_dim = 1024
+large/diffmae_large.depth = 24
+large/diffmae_large.num_heads = 16
+large/diffmae_large.decoder_embed_dim = 512
+large/diffmae_large.decoder_depth = 8
+large/diffmae_large.decoder_num_heads = 16
+large/diffmae_large.mask_ratio = 0.75
+large/diffmae_large.num_diffusion_timesteps = 1000
+large/diffmae_large.diffusion_schedule = "cosine"
+
+# Huge model - 632M parameters
+huge/diffmae_huge.img_size = 224
+huge/diffmae_huge.patch_size = 14
+huge/diffmae_huge.embed_dim = 1280
+huge/diffmae_huge.depth = 32
+huge/diffmae_huge.num_heads = 16
+huge/diffmae_huge.decoder_embed_dim = 640
+huge/diffmae_huge.decoder_depth = 8
+huge/diffmae_huge.decoder_num_heads = 16
+huge/diffmae_huge.mask_ratio = 0.75
+huge/diffmae_huge.num_diffusion_timesteps = 1000
+huge/diffmae_huge.diffusion_schedule = "cosine"
+
+# Parameters for SimplePipeline:
+# ==============================================================================
+SimplePipeline.img_size = 224
+SimplePipeline.scale = (0.2, 1.0)
+
