@@ -9,6 +9,7 @@ import os
 import sys
 import time
 from pathlib import Path
+import wandb
 
 import gin
 import numpy as np
@@ -201,6 +202,13 @@ def train_one_epoch(model, online_prob,
                 log_writer.add_scalar('norm',norm,epoch_1000x)
                 for k,v in log.items():
                     log_writer.add_scalar(f'{k}', v, epoch_1000x)
+            if wandb.run is not None:
+                wandb_logs = log.copy()
+                wandb_logs['loss'] = loss_value_reduce
+                wandb_logs['lr'] = lr
+                wandb_logs['norm'] = norm
+                wandb.logs['epoch_1000x'] = epoch_1000x
+                wandb.log(wandb_logs)
         else:
             norm = loss_scaler(loss, optimizer, parameters=model.parameters(),
                     update_grad=False)
@@ -274,9 +282,9 @@ def train(args, data_loader_train,model):
             import wandb
             wandb.init(dir=args.log_dir,config=args.__dict__,sync_tensorboard=True,resume='allow', job_type='train')
             wandb.save(os.path.join(args.output_dir, 'config.gin'),base_path=args.output_dir)
-        log_writer = SummaryWriter(log_dir=args.log_dir)
-    else:
         log_writer = None
+    else:
+        log_writer = SummaryWriter(log_dir="tensorboard_logs")
 
     if args.dynamic_resolution:
         import torch._dynamo

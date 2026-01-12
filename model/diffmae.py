@@ -122,6 +122,8 @@ class DiffusionDecoder(nn.Module):
         decoder_num_heads=16,
         mlp_ratio=4.0,
         norm_layer=nn.LayerNorm,
+        patch_size=16,
+        in_chans=3,
     ):
         super().__init__()
         
@@ -130,9 +132,10 @@ class DiffusionDecoder(nn.Module):
         
         # Project encoder output to decoder dimension
         self.decoder_embed = nn.Linear(encoder_embed_dim, decoder_embed_dim, bias=True)
+        self.target_embed = nn.Linear(patch_size**2 * in_chans, decoder_embed_dim, bias=True)
         
         # Mask token for masked patches
-        self.mask_token = nn.Parameter(torch.zeros(1, 1, decoder_embed_dim))
+        # self.mask_token = nn.Parameter(torch.zeros(1, 1, decoder_embed_dim))
         
         # Positional embedding for decoder
         self.decoder_pos_embed = nn.Parameter(
@@ -160,12 +163,12 @@ class DiffusionDecoder(nn.Module):
         
         self.decoder_norm = norm_layer(decoder_embed_dim)
         
-    def forward(self, x, ids_restore, noisy_target, timesteps):
+    def forward(self, x, ids_restore, noisy_patches, timesteps):
         """
         Args:
             x: Encoder output [N, L_visible, D_encoder]
             ids_restore: Indices to restore original order [N, L]
-            noisy_target: Noisy masked patches [N, L_masked, patch_dim]
+            noisy_patches: Noisy masked patches [N, L_masked, patch_dim]
             timesteps: Diffusion timesteps [N]
         
         Returns:
@@ -180,15 +183,12 @@ class DiffusionDecoder(nn.Module):
         t_emb = self.timestep_embedding(timesteps, self.decoder_embed_dim)
         t_emb = self.time_embed(t_emb).unsqueeze(1)  # [N, 1, D]
         
-        # Add time embedding to cls token
-        x[:, :1, :] = x[:, :1, :] + t_emb
+        target_emb = self.target_embed(noisy_patches)
+        # Add time embedding to target patches
+        target_emb = target_emb + t_emb
         
-        # Embed noisy target patches
-        # Project noisy patches to decoder dimension
-        noisy_embed = self.mask_token.expand(N, ids_restore.shape[1] - x.shape[1] + 1, -1)
-        
-        # Concatenate visible tokens and mask tokens
-        x_ = torch.cat([x[:, 1:, :], noisy_embed], dim=1)  # no cls token
+        # Concatenate visible tokens and target patches
+        x_ = torch.cat([x[:, 1:, :], target_emb], dim=1)  # no cls token
         x_ = torch.gather(
             x_, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, x.shape[2])
         )  # unshuffle
@@ -234,6 +234,7 @@ class DiffusionMaskedAutoencoderViT(nn.Module):
     """
     Diffusion-based Masked Autoencoder with Vision Transformer backbone.
     """
+    representation_names = ['avg', 'cls']
     def __init__(
         self,
         img_size=224,
@@ -331,7 +332,7 @@ class DiffusionMaskedAutoencoderViT(nn.Module):
         
         # Initialize tokens
         torch.nn.init.normal_(self.cls_token, std=0.02)
-        torch.nn.init.normal_(self.diffusion_decoder.mask_token, std=0.02)
+        # torch.nn.init.normal_(self.diffusion_decoder.mask_token, std=0.02)
         
         # Initialize nn.Linear and nn.LayerNorm
         self.apply(self._init_weights)
@@ -519,7 +520,11 @@ class DiffusionMaskedAutoencoderViT(nn.Module):
             x = blk(x)
         
         # Return average of patch tokens (or cls token)
-        return x[:, 1:].mean(1)
+        representation = {
+            'avg': x[:, 1:].mean(1),
+            'cls': x[:, 0, :],
+        }
+        return representation
 
 
 # Model factory functions with different sizes

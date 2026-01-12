@@ -67,7 +67,7 @@ class LinearProb(nn.Module):
             y = y.to(self.device, non_blocking=True) if isinstance(y, torch.Tensor) else torch.tensor(y, device=self.device)
             
         log = {}
-        for name, z in zip(self.names, self.representations_fn(x,y)):
+        for name, z in self.representations_fn(x,y):
             pred = self.heads[name](z.detach())
             if self.regression:
                 loss = self.criterion(pred.flatten(), y.float())
@@ -95,7 +95,7 @@ class LinearProb(nn.Module):
         self.optimizer.zero_grad()
         
         loss = 0
-        for name, z in zip(self.names, self.representations_fn(x,y)):
+        for name, z in self.representations_fn(x,y):
             pred = self.heads[name](z.detach())
             if self.regression:
                 loss = loss + self.criterion(pred.flatten(), y.float())
@@ -108,21 +108,11 @@ class LinearProb(nn.Module):
 
 @gin.configurable(denylist=['model'])
 def build_representations(model):
-    if hasattr(model,'projector'):
-        @torch.no_grad()
-        def representations_fn(x,y):
-            latent = model.representation(x)
-            proj = model.projector(latent)
-            return latent, proj
-        names = "latent","proj"
-    else:
-        @torch.no_grad()
-        def representations_fn(x,y):
-            latent = model.representation(x)
-            return latent,
-        names = "latent",
-
-    return names, representations_fn
+    @torch.no_grad()
+    def representations_fn(x,y):
+        representation = model.representation(x)
+        return representation.items()
+    return model.representation_names, representations_fn
 
 @gin.configurable(denylist=['model'])
 def build_representations_fn(model,fn=build_representations):
