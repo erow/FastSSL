@@ -20,7 +20,7 @@ from util import misc
 import timm
 
 from util.helper import aug_parse
-
+from util.prob import LinearProb, build_representations_fn
 
 assert timm.__version__ >= "0.6.12"  # version check
 import importlib
@@ -272,7 +272,7 @@ def train(args, data_loader_train,model):
         open(output_dir/"config.gin",'w').write(gin.operative_config_str(),)
         if not args.no_wandb:
             import wandb
-            wandb.init(dir=args.log_dir,config=args.__dict__,sync_tensorboard=True,resume=True, job_type='train')
+            wandb.init(dir=args.log_dir,config=args.__dict__,sync_tensorboard=True,resume='allow', job_type='train')
             wandb.save(os.path.join(args.output_dir, 'config.gin'),base_path=args.output_dir)
         log_writer = SummaryWriter(log_dir=args.log_dir)
     else:
@@ -361,9 +361,9 @@ def train(args, data_loader_train,model):
     elif args.line_prob:
         if args.val_data_path is None:
             raise ValueError("--val_data_path must be provided when using --line_prob")
-        from util.prob import LinearProb, build_representations_fn
         names, representations_fn = build_representations_fn(model_without_ddp)
-        online_prob = LinearProb(args.val_data_path, names, representations_fn, num_classes=args.num_classes)
+        online_prob = LinearProb(args.val_data_path, names, representations_fn, num_classes=args.num_classes, device=device)
+        print("Loaded LinearProb successfully:", online_prob)
     else:
         online_prob = None
         
@@ -406,7 +406,16 @@ def train(args, data_loader_train,model):
         
         if args.output_dir and misc.is_main_process():
             if not args.no_wandb:
-                wandb.log(log_stats)
+                # Convert any tensor values to Python scalars for wandb
+                wandb_log_stats = {}
+                for k, v in log_stats.items():
+                    if isinstance(v, torch.Tensor):
+                        wandb_log_stats[k] = v.item()
+                    elif isinstance(v, (int, float)):
+                        wandb_log_stats[k] = float(v)
+                    else:
+                        wandb_log_stats[k] = v
+                wandb.log(wandb_log_stats, step=epoch)
                 
             if log_writer is not None:
                 log_writer.flush()

@@ -250,7 +250,7 @@ class DiffusionMaskedAutoencoderViT(nn.Module):
         norm_layer=partial(nn.LayerNorm, eps=1e-6),
         num_diffusion_timesteps=1000,
         diffusion_schedule='cosine',
-        norm_pix_loss=True,
+        norm_pix_loss=False,
     ):
         super().__init__()
         

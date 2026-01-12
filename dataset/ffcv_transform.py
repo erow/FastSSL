@@ -33,6 +33,25 @@ def SimplePipeline(img_size=224,scale=(0.2,1), ratio=(3.0/4.0, 4.0/3.0),
     } 
     return pipelines  
 
+def ValPipeline(img_size=224,
+                mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225],
+                device='cuda'):
+    MEAN = np.array([(255*i) for i in mean])
+    STD = np.array([(255*i) for i in std])
+    device = torch.device(device)
+    image_pipeline = [
+        CenterCropRGBImageDecoder((img_size, img_size),ratio=(3.0/4.0, 4.0/3.0)),
+        NormalizeImage(MEAN, STD, np.float32),  
+        ToTensor(),  ToTorchImage(),
+        ToDevice(device),
+    ]
+    label_pipeline = [IntDecoder(), ToTensor(),ToDevice(device), View(-1)]
+    pipelines = {
+        'image': image_pipeline,
+        'label': label_pipeline
+    } 
+    return pipelines
+
 from torchvision.transforms import InterpolationMode
 
 class ThreeAugmentation(nn.Module):

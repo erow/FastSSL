@@ -2,6 +2,8 @@
 torchrun main_pretrain.py --data_set cifar10 --data_path ../data/  --batch_size 512 --epochs=1000 --warmup_epochs=10 --ckpt_freq 20 --lr=1e-4  --min_lr=1e-4  --cfgs configs/cifar.gin configs/resnet18.gin --gin build_model.embed_dim=512 build_model.model_fn=@SimLAP
 
 torchrun main_pretrain.py --data_set ffcv --data_path $train_path --batch_size 512 --epochs=1000 --warmup_epochs=10 --ckpt_freq 20 --lr=1e-4  --min_lr=1e-4  --cfgs configs/simclr_ffcv.gin --gin build_model.embed_dim=2048 build_model.model_fn=@SimLAP
+
+python -m debugpy --listen 0.0.0.0:5679 -m torch.distributed.launch main_pretrain.py --data_set ffcv --data_path /projects/u5ef/data/ffcv/IN1K_smart_500.ffcv --batch_size 256 --epochs=1000 --warmup_epochs=10 --ckpt_freq 20 --lr=1e-4 --min_lr=1e-4 --cfgs configs/simclr_ffcv.gin --gin build_model.embed_dim=2048 build_model.model_fn=@SimLAP SimLAP.type="'distinct'" SimLAP.alpha=0.5 --resume/home/u5ef/jw02425.u5ef/storage/experiments/vitookit/simlap/simlap_resnet50-alpha0.5/checkpoint.pth
 """
 import math
 import torch
@@ -22,7 +24,7 @@ def multipos_ce_loss(logits, pos_mask,exclude_mask=None):
     # InfoNCE loss 
     ## exclude the positives and class pairs
     neg = (score*(~exclude_mask)).sum(1,keepdim=True)
-    loss = torch.sum(pos_mask* (torch.log(score + neg) - logits))/pos_mask.sum()
+    loss = torch.sum(pos_mask* (torch.log(score + neg) - logits),dim=1)/(pos_mask.sum(dim=1)+1e-6)
     loss = loss.mean()
    
     return loss
@@ -265,7 +267,8 @@ class SimLAP(nn.Module):
         # fz1,fz2 = apply_gate(gate, z1, k2)
         # logits = contrast(fz1,fz2) * self.s
         if self.alpha is not None:
-            logits = logits - self.alpha * contrast(z1,k2)
+            logits = logits - self.alpha * contrast(z1,k2) * scale 
+            self.log['alpha'] = self.alpha.item()
 
         all_y1 = concat_all_gather(y1)
         c1_mask = (y1.unsqueeze(1) == all_y1.unsqueeze(0)) # exclude samples from y1

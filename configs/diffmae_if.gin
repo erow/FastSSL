@@ -1,0 +1,41 @@
+# Configuration for DiffMAE with ImageFolder dataset
+# For use with standard ImageNet directory structure
+#
+# Training example:
+# torchrun --nproc_per_node=8 main_pretrain.py \
+#     --data_path=/path/to/imagenet/train \
+#     --data_set=imagefolder \
+#     --epochs 1600 --warmup_epochs 40 \
+#     --opt adamw --opt_betas 0.9 0.95 \
+#     --blr 1.5e-4 --weight_decay 0.05 \
+#     --batch_size 256 \
+#     --gin configs/diffmae_if.gin \
+#     --ckpt_freq=100
+
+# Parameters for build_dataset:
+# ==============================================================================
+build_dataset.transform_fn = @SimplePipeline
+
+# Parameters for build_model:
+# ==============================================================================
+build_model.model_fn = @diffmae_base
+
+# Parameters for DiffusionMaskedAutoencoderViT (Base):
+# ==============================================================================
+diffmae_base.img_size = 224
+diffmae_base.patch_size = 16
+diffmae_base.embed_dim = 768
+diffmae_base.depth = 12
+diffmae_base.num_heads = 12
+diffmae_base.decoder_embed_dim = 384
+diffmae_base.decoder_depth = 8
+diffmae_base.decoder_num_heads = 12
+diffmae_base.mask_ratio = 0.75
+diffmae_base.num_diffusion_timesteps = 1000
+diffmae_base.diffusion_schedule = 'cosine'
+diffmae_base.norm_pix_loss = True
+
+# Parameters for SimplePipeline:
+# ==============================================================================
+SimplePipeline.img_size = 224
+SimplePipeline.scale = (0.2, 1.0)
