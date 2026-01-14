@@ -19,7 +19,7 @@ torchrun --nproc_per_node=8 main_pretrain.py \
     --blr 1.5e-4 --weight_decay 0.05 \
     --batch_size 256 \
     --gin build_model.model_fn=@diffmae_base \
-    --gin build_dataset.transform_fn=@SimplePipeline \
+          build_dataset.transform_fn=@SimplePipeline \
     --ckpt_freq=100
 ```
 """
@@ -65,27 +65,34 @@ class DiffusionSchedule:
         self.betas = betas
         self.alphas = 1.0 - betas
         self.alphas_cumprod = torch.cumprod(self.alphas, dim=0)
+        # Clamp alphas_cumprod to prevent numerical instability
+        self.alphas_cumprod = torch.clamp(self.alphas_cumprod, min=1e-8, max=1.0-1e-8)
         self.alphas_cumprod_prev = F.pad(self.alphas_cumprod[:-1], (1, 0), value=1.0)
         
         # Calculations for diffusion q(x_t | x_{t-1}) and others
         self.sqrt_alphas_cumprod = torch.sqrt(self.alphas_cumprod)
         self.sqrt_one_minus_alphas_cumprod = torch.sqrt(1.0 - self.alphas_cumprod)
-        self.log_one_minus_alphas_cumprod = torch.log(1.0 - self.alphas_cumprod)
-        self.sqrt_recip_alphas_cumprod = torch.sqrt(1.0 / self.alphas_cumprod)
-        self.sqrt_recipm1_alphas_cumprod = torch.sqrt(1.0 / self.alphas_cumprod - 1)
+        # Clamp before log to prevent NaN
+        self.log_one_minus_alphas_cumprod = torch.log(torch.clamp(1.0 - self.alphas_cumprod, min=1e-8))
+        # Add epsilon to prevent division by zero
+        self.sqrt_recip_alphas_cumprod = torch.sqrt(1.0 / (self.alphas_cumprod + 1e-8))
+        # Clamp to prevent negative values under square root
+        self.sqrt_recipm1_alphas_cumprod = torch.sqrt(torch.clamp(1.0 / self.alphas_cumprod - 1, min=0))
         
         # Calculations for posterior q(x_{t-1} | x_t, x_0)
+        # Add epsilon to denominator to prevent division by very small numbers
+        denominator = 1.0 - self.alphas_cumprod + 1e-8
         self.posterior_variance = (
-            betas * (1.0 - self.alphas_cumprod_prev) / (1.0 - self.alphas_cumprod)
+            betas * (1.0 - self.alphas_cumprod_prev) / denominator
         )
         self.posterior_log_variance_clipped = torch.log(
             torch.cat([self.posterior_variance[1:2], self.posterior_variance[1:]])
         )
         self.posterior_mean_coef1 = (
-            betas * torch.sqrt(self.alphas_cumprod_prev) / (1.0 - self.alphas_cumprod)
+            betas * torch.sqrt(self.alphas_cumprod_prev) / denominator
         )
         self.posterior_mean_coef2 = (
-            (1.0 - self.alphas_cumprod_prev) * torch.sqrt(self.alphas) / (1.0 - self.alphas_cumprod)
+            (1.0 - self.alphas_cumprod_prev) * torch.sqrt(self.alphas) / denominator
         )
 
     def q_sample(self, x_start, t, noise=None):
@@ -134,16 +141,15 @@ class DiffusionDecoder(nn.Module):
         
         # Project encoder output to decoder dimension
         self.decoder_embed = nn.Linear(encoder_embed_dim, decoder_embed_dim, bias=True)
-        self.target_embed = nn.Linear(patch_size**2 * in_chans, decoder_embed_dim, bias=False)
-        # self.target_embed.requires_grad_(False)
-        
-        # Mask token for masked patches
-        # self.mask_token = nn.Parameter(torch.zeros(1, 1, decoder_embed_dim))
+        self.target_embed = nn.Linear(patch_size**2 * in_chans, decoder_embed_dim, bias=True)
         
         # Positional embedding for decoder
         self.decoder_pos_embed = nn.Parameter(
-            torch.zeros(1, num_patches + 1, decoder_embed_dim), requires_grad=False
+            torch.randn(1, num_patches + 1, decoder_embed_dim), requires_grad=False
         )
+        ## init with sin-cos embedding
+        pos_embed = get_2d_sincos_pos_embed(self.decoder_pos_embed.shape[-1], int(num_patches**0.5), cls_token=True)
+        self.decoder_pos_embed.data.copy_(torch.from_numpy(pos_embed).float().unsqueeze(0))
         
         # Time step embedding (for diffusion timestep)
         self.time_embed = nn.Sequential(
@@ -166,18 +172,36 @@ class DiffusionDecoder(nn.Module):
         
         self.decoder_norm = norm_layer(decoder_embed_dim)
         
-    def forward(self, x, ids_restore, noisy_patches, timesteps):
+    def forward(self, x, ids_restore, noisy_patches, timesteps, num_patches=None):
         """
         Args:
             x: Encoder output [N, L_visible, D_encoder]
             ids_restore: Indices to restore original order [N, L]
             noisy_patches: Noisy masked patches [N, L_masked, patch_dim]
             timesteps: Diffusion timesteps [N]
+            num_patches: Number of patches (for dynamic resolution). If None, uses self.num_patches.
         
         Returns:
             Predicted noise [N, L_masked, patch_dim]
         """
         N = x.shape[0]
+        
+        # Determine actual number of patches (for dynamic resolution)
+        # Total patches = visible + masked = ids_restore.shape[1]
+        if num_patches is None:
+            num_patches = ids_restore.shape[1]
+        
+        # Resample decoder positional embeddings if needed for dynamic resolution
+        if num_patches != self.num_patches:
+            # Calculate grid size from number of patches
+            grid_size = int(num_patches ** 0.5)
+            decoder_pos_embed = resample_abs_pos_embed(
+                self.decoder_pos_embed,
+                (grid_size, grid_size),
+                num_prefix_tokens=1,
+            )
+        else:
+            decoder_pos_embed = self.decoder_pos_embed
         
         # Embed encoder tokens
         x = self.decoder_embed(x)
@@ -198,7 +222,7 @@ class DiffusionDecoder(nn.Module):
         x = torch.cat([x[:, :1, :], x_], dim=1)  # append cls token
         
         # Add positional embeddings
-        x = x + self.decoder_pos_embed
+        x = x + decoder_pos_embed
         
         # Apply decoder blocks
         for blk in self.decoder_blocks:
@@ -300,7 +324,7 @@ class DiffusionMaskedAutoencoderViT(nn.Module):
         
         # Noise predictor head
         self.noise_pred = nn.Linear(
-            decoder_embed_dim, patch_size**2 * in_chans, bias=False
+            decoder_embed_dim, patch_size**2 * in_chans, bias=True
         )
         # --------------------------------------------------------------------------
         
@@ -426,17 +450,25 @@ class DiffusionMaskedAutoencoderViT(nn.Module):
         """
         Encode visible patches.
         """
+        B, C, H, W = x.shape
+        # Resample positional embeddings for dynamic image sizes
+        pos_embed = resample_abs_pos_embed(
+            self.pos_embed,
+            (H // self.patch_embed.patch_size[0], W // self.patch_embed.patch_size[1]),
+            num_prefix_tokens=1,
+        )
+        
         # Embed patches
         x = self.patch_embed(x)
         
         # Add pos embed w/o cls token
-        x = x + self.pos_embed[:, 1:, :]
+        x = x + pos_embed[:, 1:, :]
         
         # Masking: length -> length * mask_ratio
         x, mask, ids_restore = self.random_masking(x, mask_ratio)
         
         # Append cls token
-        cls_token = self.cls_token + self.pos_embed[:, :1, :]
+        cls_token = self.cls_token + pos_embed[:, :1, :]
         cls_tokens = cls_token.expand(x.shape[0], -1, -1)
         x = torch.cat((cls_tokens, x), dim=1)
         
@@ -462,6 +494,9 @@ class DiffusionMaskedAutoencoderViT(nn.Module):
         """
         N = latent.shape[0]
         
+        # Get actual number of patches from ids_restore (for dynamic resolution)
+        num_patches = ids_restore.shape[1]
+        
         # Sample random timesteps for each sample in batch
         min_t, max_t = self.time_range
         timesteps = torch.randint(
@@ -474,11 +509,21 @@ class DiffusionMaskedAutoencoderViT(nn.Module):
             target_patches, timesteps, noise=noise
         )
         
-        # Predict noise using decoder
+        # NaN detection: check for NaN in intermediate values
+        if torch.isnan(noisy_patches).any():
+            print(f"WARNING: NaN detected in noisy_patches! timesteps: {timesteps}, target_patches stats: min={target_patches.min()}, max={target_patches.max()}, mean={target_patches.mean()}")
+        
+        # Predict noise using decoder (pass num_patches for dynamic resolution)
         decoder_out = self.diffusion_decoder(
-            latent, ids_restore, noisy_patches, timesteps
+            latent, ids_restore, noisy_patches, timesteps, num_patches=num_patches
         )
         pred = self.noise_pred(decoder_out)
+        
+        # NaN detection: check for NaN in predictions
+        if torch.isnan(pred).any():
+            print(f"WARNING: NaN detected in pred! decoder_out stats: min={decoder_out.min()}, max={decoder_out.max()}, mean={decoder_out.mean()}")
+        if torch.isnan(noise).any():
+            print(f"WARNING: NaN detected in noise!")
         
         # Compute loss only on masked patches
         if self.pred_type == 'x':
@@ -517,7 +562,9 @@ class DiffusionMaskedAutoencoderViT(nn.Module):
         if self.norm_pix_loss:
             mean = target.mean(dim=-1, keepdim=True)
             var = target.var(dim=-1, keepdim=True)
-            target = (target - mean) / (var + 1e-6)**0.5
+            # Clamp variance to prevent numerical instability in float16
+            var = torch.clamp(var, min=1e-5)
+            target = (target - mean) / torch.sqrt(var)
         
         # Encode visible patches
         latent, mask, ids_restore = self.forward_encoder(imgs, self.mask_ratio)
@@ -527,20 +574,35 @@ class DiffusionMaskedAutoencoderViT(nn.Module):
             latent, ids_restore, target, mask
         )
         
+        # NaN detection: check final loss
+        if torch.isnan(loss) or torch.isinf(loss):
+            print(f"WARNING: NaN/Inf detected in final loss! loss={loss}, mask.sum()={mask.sum()}, target stats: min={target.min()}, max={target.max()}, mean={target.mean()}")
+            # Log to self.log for monitoring
+            self.log['nan_detected'] = 1.0
+            self.log['loss_value'] = float('nan') if torch.isnan(loss) else float('inf')
+        
         return loss, self.log
     
     def representation(self, x):
         """
         Extract representations for downstream tasks.
         """
+        B, C, H, W = x.shape
+        # Resample positional embeddings for dynamic image sizes
+        pos_embed = resample_abs_pos_embed(
+            self.pos_embed,
+            (H // self.patch_embed.patch_size[0], W // self.patch_embed.patch_size[1]),
+            num_prefix_tokens=1,
+        )
+        
         # Embed patches
         x = self.patch_embed(x)
         
         # Add pos embed w/o cls token
-        x = x + self.pos_embed[:, 1:, :]
+        x = x + pos_embed[:, 1:, :]
         
         # Append cls token
-        cls_token = self.cls_token + self.pos_embed[:, :1, :]
+        cls_token = self.cls_token + pos_embed[:, :1, :]
         cls_tokens = cls_token.expand(x.shape[0], -1, -1)
         x = torch.cat((cls_tokens, x), dim=1)
         
@@ -556,10 +618,15 @@ class DiffusionMaskedAutoencoderViT(nn.Module):
         return representation
 
 
+PRETRAINED_WEIGHTS = {
+    'mae_base': 'https://dl.fbaipublicfiles.com/mae/pretrain/mae_pretrain_vit_base.pth',
+    'mae_large': 'https://dl.fbaipublicfiles.com/mae/pretrain/mae_pretrain_vit_large.pth',
+    'mae_huge': 'https://dl.fbaipublicfiles.com/mae/pretrain/mae_pretrain_vit_huge.pth',
+}
 # Model factory functions with different sizes
 
 @gin.configurable()
-def diffmae_tiny(**kwargs):
+def diffmae_tiny(pretrained=False, **kwargs):
     """DiffMAE Tiny: 5.7M parameters"""
     default_cfg = dict(
         patch_size=16,
@@ -574,11 +641,14 @@ def diffmae_tiny(**kwargs):
     )
     default_cfg.update(kwargs)
     model = DiffusionMaskedAutoencoderViT(**default_cfg)
+    if pretrained:
+        state_dict = torch.hub.load_state_dict_from_url(PRETRAINED_WEIGHTS['mae_tiny'], map_location='cpu', weights_only=True)
+        print("loading mae weights to diffmae: ", model.load_state_dict(state_dict, strict=False))
     return model
 
 
 @gin.configurable()
-def diffmae_small(**kwargs):
+def diffmae_small(pretrained=False, **kwargs):
     """DiffMAE Small: 22M parameters"""
     default_cfg = dict(
         patch_size=16,
@@ -593,11 +663,14 @@ def diffmae_small(**kwargs):
     )
     default_cfg.update(kwargs)
     model = DiffusionMaskedAutoencoderViT(**default_cfg)
+    if pretrained:
+        state_dict = torch.hub.load_state_dict_from_url(PRETRAINED_WEIGHTS['mae_small'], map_location='cpu', weights_only=True)
+        print("loading mae weights to diffmae: ", model.load_state_dict(state_dict, strict=False))
     return model
 
 
 @gin.configurable()
-def diffmae_base(**kwargs):
+def diffmae_base(pretrained=False, **kwargs):
     """DiffMAE Base: 86M parameters"""
     default_cfg = dict(
         patch_size=16,
@@ -612,11 +685,15 @@ def diffmae_base(**kwargs):
     )
     default_cfg.update(kwargs)
     model = DiffusionMaskedAutoencoderViT(**default_cfg)
+    if pretrained:
+        state_dict = torch.hub.load_state_dict_from_url(PRETRAINED_WEIGHTS['mae_base'], map_location='cpu', weights_only=True)
+        state_dict = state_dict['model']
+        print("loading mae weights to diffmae: ", model.load_state_dict(state_dict, strict=False))
     return model
 
 
 @gin.configurable()
-def diffmae_large(**kwargs):
+def diffmae_large(pretrained=False, **kwargs):
     """DiffMAE Large: 304M parameters"""
     default_cfg = dict(
         patch_size=16,
@@ -631,11 +708,15 @@ def diffmae_large(**kwargs):
     )
     default_cfg.update(kwargs)
     model = DiffusionMaskedAutoencoderViT(**default_cfg)
+    if pretrained:
+        state_dict = torch.hub.load_state_dict_from_url(PRETRAINED_WEIGHTS['mae_large'], map_location='cpu', weights_only=True)
+        state_dict = state_dict['model']
+        print("loading mae weights to diffmae: ", model.load_state_dict(state_dict, strict=False))
     return model
 
 
 @gin.configurable()
-def diffmae_huge(**kwargs):
+def diffmae_huge(pretrained=False, **kwargs):
     """DiffMAE Huge: 632M parameters"""
     default_cfg = dict(
         patch_size=14,
@@ -650,6 +731,10 @@ def diffmae_huge(**kwargs):
     )
     default_cfg.update(kwargs)
     model = DiffusionMaskedAutoencoderViT(**default_cfg)
+    if pretrained:
+        state_dict = torch.hub.load_state_dict_from_url(PRETRAINED_WEIGHTS['mae_huge'], map_location='cpu', weights_only=True)
+        state_dict = state_dict['model']
+        print("loading mae weights to diffmae: ", model.load_state_dict(state_dict, strict=False))
     return model
 
 

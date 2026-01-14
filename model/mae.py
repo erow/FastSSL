@@ -274,8 +274,14 @@ class MaskedAutoencoderViT(nn.Module):
         loss = self.target_loss(imgs, pred, mask)
         return loss, self.log
 
+PRETRAINED_WEIGHTS = {
+    'mae_base': 'https://dl.fbaipublicfiles.com/mae/pretrain/mae_pretrain_vit_base.pth',
+    'mae_large': 'https://dl.fbaipublicfiles.com/mae/pretrain/mae_pretrain_vit_large.pth',
+    'mae_huge': 'https://dl.fbaipublicfiles.com/mae/pretrain/mae_pretrain_vit_huge.pth',
+}
+
 @gin.configurable()
-def mae_tiny(**kwargs):
+def mae_tiny(pretrained=False, **kwargs):
     default_cfg = dict(
         patch_size=16,embed_dim=192,depth=12,num_heads=3,
         decoder_embed_dim=384, decoder_depth=4, decoder_num_heads=6,
@@ -285,10 +291,13 @@ def mae_tiny(**kwargs):
     default_cfg.update(kwargs)
         
     model = MaskedAutoencoderViT(**default_cfg)
+    if pretrained:
+        state_dict = torch.hub.load_state_dict_from_url(PRETRAINED_WEIGHTS['mae_tiny'], map_location='cpu', weights_only=True)
+        print("loading mae weights to mae: ", model.load_state_dict(state_dict, strict=False))
     return model
 
-@gin.configurable()
-def mae_small(**kwargs):
+@gin.configurable() 
+def mae_small(pretrained=False, **kwargs):
     default_cfg = dict(
         patch_size=16, embed_dim=384, depth=12, num_heads=6, 
         decoder_embed_dim=512, decoder_depth=4, decoder_num_heads=16,
@@ -296,10 +305,13 @@ def mae_small(**kwargs):
     default_cfg.update(kwargs)
         
     model = MaskedAutoencoderViT(**default_cfg)
+    if pretrained:
+        state_dict = torch.hub.load_state_dict_from_url(PRETRAINED_WEIGHTS['mae_small'], map_location='cpu', weights_only=True)
+        print("loading mae weights to mae: ", model.load_state_dict(state_dict, strict=False))
     return model
 
 @gin.configurable()
-def mae_base(**kwargs):
+def mae_base(pretrained=False, **kwargs):
     default_cfg = dict(
         patch_size=16, embed_dim=768, depth=12, num_heads=12,
         decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
@@ -307,10 +319,13 @@ def mae_base(**kwargs):
     default_cfg.update(kwargs)
         
     model = MaskedAutoencoderViT(**default_cfg)
+    if pretrained:
+        state_dict = torch.hub.load_state_dict_from_url(PRETRAINED_WEIGHTS['mae_base'], map_location='cpu', weights_only=True)
+        print("loading mae weights to mae: ", model.load_state_dict(state_dict, strict=False))
     return model
 
 @gin.configurable()
-def mae_large(**kwargs):
+def mae_large(pretrained=False, **kwargs):
     default_cfg = dict(
         patch_size=16, embed_dim=1024, depth=24, num_heads=16,
         decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
@@ -318,10 +333,13 @@ def mae_large(**kwargs):
     default_cfg.update(kwargs)
         
     model = MaskedAutoencoderViT(**default_cfg)
+    if pretrained:
+        state_dict = torch.hub.load_state_dict_from_url(PRETRAINED_WEIGHTS['mae_large'], map_location='cpu', weights_only=True)
+        print("loading mae weights to mae: ", model.load_state_dict(state_dict, strict=False))
     return model
 
 @gin.configurable()
-def mae_huge_patch14_dec512d8b(**kwargs):
+def mae_huge_patch14_dec512d8b(pretrained=False, **kwargs):
     default_cfg = dict(
         patch_size=14, embed_dim=1280, depth=32, num_heads=16,
         decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
@@ -329,6 +347,9 @@ def mae_huge_patch14_dec512d8b(**kwargs):
     default_cfg.update(kwargs)
         
     model = MaskedAutoencoderViT(**default_cfg)
+    if pretrained:
+        state_dict = torch.hub.load_state_dict_from_url(PRETRAINED_WEIGHTS['mae_huge'], map_location='cpu', weights_only=True)
+        print("loading mae weights to mae: ", model.load_state_dict(state_dict, strict=False))
     return model
 
 if __name__ == '__main__':

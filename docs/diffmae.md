@@ -111,6 +111,23 @@ torchrun --nproc_per_node=8 main_pretrain.py \
     [other args...]
 ```
 
+Training from MAE pretrained weights:
+```bash
+main_pretrain.py \
+    --data_path=$FFCVTRAIN \
+    --data_set=ffcv \
+    --epochs 200 \
+    --warmup_epochs 10 \
+    --opt adamw \
+    --opt_betas 0.9 0.95 \
+    --blr 1.5e-4 \
+    --weight_decay 0.05 \
+    --batch_size 512 \
+    --cfgs configs/diffmae_ffcv.gin \
+    --gin build_model.pretrained=True \
+
+```
+
 ### Hyperparameters
 
 #### Recommended Settings (ImageNet-1K)

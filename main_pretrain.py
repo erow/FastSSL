@@ -195,12 +195,15 @@ def train_one_epoch(model, online_prob,
                     log_writer.add_scalar('train_loss', loss_value_reduce, epoch_1000x)
                     log_writer.add_scalar('epoch_1000x',epoch_1000x)
                     log_writer.add_scalar('lr', lr, epoch_1000x)
-                    log_writer.add_scalar('norm',norm,epoch_1000x)
+                    if norm is not None:
+                        log_writer.add_scalar('norm',norm,epoch_1000x)
                     for k,v in log.items():
                         log_writer.add_scalar(f'{k}', v, epoch_1000x)
                 
                 if wandb.run is not None:
-                    wandb_logs = {**log, 'loss': loss_value_reduce, 'lr': lr, 'norm': norm, 'epoch_1000x': epoch_1000x}
+                    wandb_logs = {**log, 'loss': loss_value_reduce, 'lr': lr, 'epoch_1000x': epoch_1000x}
+                    if norm is not None:
+                        wandb_logs['norm'] = norm
                     wandb.log(wandb_logs)
         else:
             loss_scaler(loss, optimizer, parameters=model.parameters(),
@@ -402,7 +405,7 @@ def train(args, data_loader_train,model):
                         wandb_log_stats[k] = float(v)
                     else:
                         wandb_log_stats[k] = v
-                wandb.log(wandb_log_stats, step=epoch)
+                wandb.log(wandb_log_stats)
                 
             if log_writer is not None:
                 log_writer.flush()
