@@ -1,4 +1,19 @@
+DRES_SCHEME_1 = [
+    {"res": 160, "epoch": 0},
+    {"res": 192, "epoch": 400},
+    {"res": 224, "epoch": 800},
+]
 
-DynamicMasking.start_ramp=0
-DynamicMasking.end_ramp=100
-DynamicMasking.scheme=1
+DRES_SCHEME_2 = [
+    {"res": 160, "epoch": 0},
+    {"res": 192, "epoch": 400},
+    {"res": 224, "epoch": 800},
+]
+
+DRES_SCHEME_3 = [
+    {"res": 224, "epoch": 0},
+    {"res": 192, "epoch": 400},
+    {"res": 160, "epoch": 800},
+]
+
+DynamicResolution.scheme=%DRES_SCHEME_1

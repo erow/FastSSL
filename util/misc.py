@@ -305,7 +305,7 @@ class NativeScalerWithGradNormCount:
                 norm = torch.nn.utils.clip_grad_norm_(parameters, clip_grad)
             else:
                 self._scaler.unscale_(optimizer)
-                norm = get_grad_norm_(parameters)
+                norm = None
             self._scaler.step(optimizer)
             self._scaler.update()
         else:

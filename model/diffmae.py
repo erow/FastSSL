@@ -42,11 +42,11 @@ class DiffusionSchedule:
     Implements various noise schedules for diffusion models.
     Supports linear, cosine, and quadratic schedules.
     """
-    def __init__(self, num_timesteps=1000, schedule='cosine', beta_start=0.0001, beta_end=0.02):
+    def __init__(self, num_timesteps=1000, schedule='linear', beta_start=0.0001, beta_end=0.02,rho=0.8):
         self.num_timesteps = num_timesteps
         
         if schedule == 'linear':
-            betas = torch.linspace(beta_start, beta_end, num_timesteps)
+            betas = torch.linspace(beta_start, beta_end, num_timesteps) ** rho
         elif schedule == 'cosine':
             # Cosine schedule as proposed in https://arxiv.org/abs/2102.09672
             steps = num_timesteps + 1
@@ -57,6 +57,8 @@ class DiffusionSchedule:
             betas = torch.clip(betas, 0.0001, 0.9999)
         elif schedule == 'quadratic':
             betas = torch.linspace(beta_start**0.5, beta_end**0.5, num_timesteps) ** 2
+        # elif schedule == 'exponential':
+        #     betas = torch.exp(torch.linspace(beta_start, beta_end, num_timesteps))
         else:
             raise ValueError(f"Unknown schedule: {schedule}")
         
@@ -132,7 +134,8 @@ class DiffusionDecoder(nn.Module):
         
         # Project encoder output to decoder dimension
         self.decoder_embed = nn.Linear(encoder_embed_dim, decoder_embed_dim, bias=True)
-        self.target_embed = nn.Linear(patch_size**2 * in_chans, decoder_embed_dim, bias=True)
+        self.target_embed = nn.Linear(patch_size**2 * in_chans, decoder_embed_dim, bias=False)
+        # self.target_embed.requires_grad_(False)
         
         # Mask token for masked patches
         # self.mask_token = nn.Parameter(torch.zeros(1, 1, decoder_embed_dim))
@@ -250,8 +253,10 @@ class DiffusionMaskedAutoencoderViT(nn.Module):
         mlp_ratio=4.0,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),
         num_diffusion_timesteps=1000,
-        diffusion_schedule='cosine',
-        norm_pix_loss=False,
+        diffusion_schedule='linear',
+        norm_pix_loss=True,
+        pred_type='x',  # 'x' for x-prediction (default), 'eps' for epsilon prediction
+        time_range=None,  # Tuple (min, max) to control timestep range, None for full range [0, num_diffusion_timesteps)
     ):
         super().__init__()
         
@@ -264,7 +269,7 @@ class DiffusionMaskedAutoencoderViT(nn.Module):
         # --------------------------------------------------------------------------
         # MAE encoder specifics
         self.patch_embed = PatchEmbed(
-            img_size, patch_size, in_chans, embed_dim, strict_img_size=True
+            img_size, patch_size, in_chans, embed_dim, strict_img_size=False,dynamic_img_pad=True
         )
         num_patches = self.patch_embed.num_patches
         self.num_patches = num_patches
@@ -295,7 +300,7 @@ class DiffusionMaskedAutoencoderViT(nn.Module):
         
         # Noise predictor head
         self.noise_pred = nn.Linear(
-            decoder_embed_dim, patch_size**2 * in_chans, bias=True
+            decoder_embed_dim, patch_size**2 * in_chans, bias=False
         )
         # --------------------------------------------------------------------------
         
@@ -305,8 +310,24 @@ class DiffusionMaskedAutoencoderViT(nn.Module):
             schedule=diffusion_schedule,
         )
         self.num_diffusion_timesteps = num_diffusion_timesteps
+        self.pred_type = pred_type
+        
+        # Time range for timestep sampling
+        if time_range is None:
+            self.time_range = (0, num_diffusion_timesteps)
+        else:
+            if not isinstance(time_range, (tuple, list)) or len(time_range) != 2:
+                raise ValueError(f"time_range must be a tuple/list of length 2, got {time_range}")
+            min_t, max_t = time_range
+            if min_t < 0 or max_t > num_diffusion_timesteps or min_t >= max_t:
+                raise ValueError(
+                    f"time_range must satisfy 0 <= min < max <= num_diffusion_timesteps, "
+                    f"got {time_range} with num_diffusion_timesteps={num_diffusion_timesteps}"
+                )
+            self.time_range = (min_t, max_t)
         
         self.initialize_weights()
+        
     
     def initialize_weights(self):
         # Initialize positional embeddings
@@ -442,8 +463,9 @@ class DiffusionMaskedAutoencoderViT(nn.Module):
         N = latent.shape[0]
         
         # Sample random timesteps for each sample in batch
+        min_t, max_t = self.time_range
         timesteps = torch.randint(
-            0, self.num_diffusion_timesteps, (N,), device=latent.device
+            min_t, max_t, (N,), device=latent.device
         ).long()
         
         # Add noise to target patches according to diffusion schedule
@@ -456,14 +478,21 @@ class DiffusionMaskedAutoencoderViT(nn.Module):
         decoder_out = self.diffusion_decoder(
             latent, ids_restore, noisy_patches, timesteps
         )
-        pred_noise = self.noise_pred(decoder_out)
+        pred = self.noise_pred(decoder_out)
         
         # Compute loss only on masked patches
-        loss = (pred_noise - noise) ** 2
-        loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
-        loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
+        if self.pred_type == 'x':
+            loss = (pred - target_patches) ** 2
+            loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
+            loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
+        elif self.pred_type == 'eps':
+            loss = (pred - noise) ** 2
+            loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
+            loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
+        else:
+            raise ValueError(f"Invalid prediction type: {self.pred_type}")
         
-        return pred_noise, loss
+        return pred, loss
     
     def forward(self, imgs, **kwargs):
         """

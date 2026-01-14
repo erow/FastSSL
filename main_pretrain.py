@@ -18,10 +18,7 @@ import torch
 import torch.backends.cudnn as cudnn
 from torch.utils.tensorboard import SummaryWriter
 from util import misc
-import timm
-
 from util.helper import aug_parse
-from util.prob import LinearProb, build_representations_fn
 
 assert timm.__version__ >= "0.6.12"  # version check
 import importlib
@@ -38,7 +35,7 @@ from layers.build_model import build_model
 from dataset.build_dataset import build_dataset
 
 from typing import Iterable
-from util.dres import DynamicMasking
+from util.dres import DynamicResolution
 
 def get_args_parser():
     parser = argparse.ArgumentParser('Fast Self-supervised Learning', add_help=False)
@@ -54,7 +51,6 @@ def get_args_parser():
     parser.add_argument("--no_wandb", default=False, action="store_true", help="Use wandb for logging.")
     parser.add_argument("--dynamic_resolution", default=False, action="store_true", help="Use dynamic resolution.")
     parser.add_argument("--prob", default=False, action='store_true')
-    parser.add_argument("--line_prob", default=False, action='store_true', help="Use linear probability evaluation during training.")
     
     # Model parameters
     parser.add_argument("--compile", default=False, action="store_true", help="Compile the module or not.")
@@ -91,8 +87,6 @@ def get_args_parser():
     parser.add_argument('--data_set', default='imnet', help='dataset name, one of {imnet, ffcv, cifar10}')
     parser.add_argument('--data_path', default='/datasets01/imagenet_full_size/061417/', type=str,
                         help='dataset path')
-    parser.add_argument('--val_data_path', default=None, type=str,
-                        help='validation dataset path for linear probing evaluation')
 
     parser.add_argument('--output_dir', default=None, type=str,
                         help='path where to save, empty for no saving')
@@ -184,36 +178,33 @@ def train_one_epoch(model, online_prob,
                 prob_log = online_prob.step(samples, targets)
                 log.update(prob_log)
             
-            
             metric_logger.update(loss=loss_value)
             metric_logger.update(lr=lr)
             for k,v in log.items():
                 metric_logger.update(**{k:v})
             
-            loss_value_reduce = misc.all_reduce_mean(loss_value)
-            if log_writer is not None and (data_iter_step + 1) % accum_iter == 0:
-                """ We use epoch_1000x as the x-axis in tensorboard.
-                This calibrates different curves when batch size changes.
-                """
+            if data_iter_step % 100 == 0:
+                loss_value_reduce = misc.all_reduce_mean(loss_value)
                 epoch_1000x = int((data_iter_step / len(data_loader) + epoch) * 1000)
-                log_writer.add_scalar('train_loss', loss_value_reduce, epoch_1000x)
-                log_writer.add_scalar('epoch_1000x',epoch_1000x)
-                log_writer.add_scalar('lr', lr, epoch_1000x)
-                log_writer.add_scalar('norm',norm,epoch_1000x)
-                for k,v in log.items():
-                    log_writer.add_scalar(f'{k}', v, epoch_1000x)
-            if wandb.run is not None:
-                wandb_logs = log.copy()
-                wandb_logs['loss'] = loss_value_reduce
-                wandb_logs['lr'] = lr
-                wandb_logs['norm'] = norm
-                wandb.logs['epoch_1000x'] = epoch_1000x
-                wandb.log(wandb_logs)
+                
+                
+                if log_writer is not None:
+                    """ We use epoch_1000x as the x-axis in tensorboard.
+                    This calibrates different curves when batch size changes.
+                    """
+                    log_writer.add_scalar('train_loss', loss_value_reduce, epoch_1000x)
+                    log_writer.add_scalar('epoch_1000x',epoch_1000x)
+                    log_writer.add_scalar('lr', lr, epoch_1000x)
+                    log_writer.add_scalar('norm',norm,epoch_1000x)
+                    for k,v in log.items():
+                        log_writer.add_scalar(f'{k}', v, epoch_1000x)
+                
+                if wandb.run is not None:
+                    wandb_logs = {**log, 'loss': loss_value_reduce, 'lr': lr, 'norm': norm, 'epoch_1000x': epoch_1000x}
+                    wandb.log(wandb_logs)
         else:
-            norm = loss_scaler(loss, optimizer, parameters=model.parameters(),
+            loss_scaler(loss, optimizer, parameters=model.parameters(),
                     update_grad=False)
-        if args.device == 'cuda':
-            torch.cuda.synchronize()
 
         
 
@@ -273,24 +264,24 @@ def train(args, data_loader_train,model):
         output_dir=Path(args.output_dir)
 
     global_rank = misc.get_rank()
-    if global_rank == 0 and args.output_dir is not None:
-        args.log_dir = os.path.join(args.output_dir, 'log')
-        os.makedirs(args.log_dir, exist_ok=True)
-        # log with wandb
-        open(output_dir/"config.gin",'w').write(gin.operative_config_str(),)
-        if not args.no_wandb:
-            import wandb
-            wandb.init(dir=args.log_dir,config=args.__dict__,sync_tensorboard=True,resume='allow', job_type='train')
-            wandb.save(os.path.join(args.output_dir, 'config.gin'),base_path=args.output_dir)
-        log_writer = None
-    else:
-        log_writer = SummaryWriter(log_dir="tensorboard_logs")
+    log_writer = None
+    if global_rank == 0:
+        if args.output_dir is not None:
+            args.log_dir = os.path.join(args.output_dir, 'log')
+            os.makedirs(args.log_dir, exist_ok=True)
+            # log with wandb
+            open(output_dir/"config.gin",'w').write(gin.operative_config_str(),)
+            if not args.no_wandb:
+                import wandb
+                wandb.init(dir=args.log_dir,config=args.__dict__,resume='allow', job_type='train')
+                wandb.save(os.path.join(args.output_dir, 'config.gin'),base_path=args.output_dir)
+            else:
+                log_writer = SummaryWriter(log_dir=args.log_dir)
 
     if args.dynamic_resolution:
         import torch._dynamo
-        from model.dres import DynamicMasking
         torch._dynamo.config.suppress_errors = True
-        dres = DynamicMasking() 
+        dres = DynamicResolution() 
     else:
         dres = None
     
@@ -312,43 +303,37 @@ def train(args, data_loader_train,model):
     print("accumulate grad iterations: %d" % args.accum_iter)
     print("effective batch size: %d" % args.eff_batch_size)
 
-    model_without_ddp = model
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
     
-    # following timm: set wd as 0 for bias and norm layers
-    # param_groups = optim_factory.param_groups_weight_decay(model_without_ddp, args.weight_decay)     
-    
-    # if args.opt == 'adamw':
-    #     optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9,0.95),weight_decay=args.weight_decay)   
-    # elif args.opt == 'muon':
-    #     from util.muon import Muon
-    #     muon_params = []
-    #     adamw_params = []
-    #     no_weight_decay_list = []
-    #     for name, p in model.named_parameters():
-    #         if 'block' in name and p.ndim == 2:
-    #             muon_params.append(p)
-    #         elif p.ndim <= 1 or name.endswith(".bias"):
-    #             no_weight_decay_list.append(p)
-    #         else:
-    #             adamw_params.append(p)
-    #     print(f"Muon parameters: {len(muon_params)}, AdamW parameters: {len(adamw_params)}")
-    #     # if args.opt_betas is None:
-    #     #     args.opt_betas = (0.95,0.95)
-    #     muon_params = [{"params": muon_params,'weight_decay':1}]
-    #     adamw_params = [
-    #         {'params': no_weight_decay_list, 'weight_decay': 0.},
-    #         {'params': adamw_params, 'weight_decay': args.weight_decay},
-    #         ]
-    #     optimizer = Muon(lr=args.lr, wd=args.weight_decay, momentum=0.95,
-    #                      muon_params=muon_params, adamw_params=adamw_params,
-    #                      adamw_eps=args.opt_eps)
+    if args.opt == 'muon':
+        from util.muon import Muon
+        muon_params = []
+        adamw_params = []
+        no_weight_decay_list = []
+        for name, p in model.named_parameters():
+            if 'block' in name and p.ndim == 2:
+                muon_params.append(p)
+            elif p.ndim <= 1 or name.endswith(".bias"):
+                no_weight_decay_list.append(p)
+            else:
+                adamw_params.append(p)
+        print(f"Muon parameters: {len(muon_params)}, AdamW parameters: {len(adamw_params)}")
+        # if args.opt_betas is None:
+        #     args.opt_betas = (0.95,0.95)
+        muon_params = [{"params": muon_params,'weight_decay':1}]
+        adamw_params = [
+            {'params': no_weight_decay_list, 'weight_decay': 0.},
+            {'params': adamw_params, 'weight_decay': args.weight_decay},
+            ]
+        optimizer = Muon(lr=args.lr, wd=args.weight_decay, momentum=0.95,
+                         muon_params=muon_params, adamw_params=adamw_params,
+                         adamw_eps=args.opt_eps)
 
-    # else:
-    #     optimizer = timm.optim.create_optimizer(args, param_groups)
+    else:
+        optimizer = optim_factory.create_optimizer(args, model,filter_bias_and_bn=args.opt_filter)
     
-    optimizer = optim_factory.create_optimizer(args, model,filter_bias_and_bn=args.opt_filter)
+    
     print('optimizer', optimizer)
     loss_scaler = misc.NativeScalerWithGradNormCount()
 
@@ -366,12 +351,6 @@ def train(args, data_loader_train,model):
         from util.clustering import KmeansProb        
         online_prob = KmeansProb(model_without_ddp.representation,
             num_clusters=args.num_classes)
-    elif args.line_prob:
-        if args.val_data_path is None:
-            raise ValueError("--val_data_path must be provided when using --line_prob")
-        names, representations_fn = build_representations_fn(model_without_ddp)
-        online_prob = LinearProb(args.val_data_path, names, representations_fn, num_classes=args.num_classes, device=device)
-        print("Loaded LinearProb successfully:", online_prob)
     else:
         online_prob = None
         

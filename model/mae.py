@@ -31,6 +31,7 @@ from torchvision.transforms import GaussianBlur
 from layers.target import build_target
 # recipe https://github.com/facebookresearch/mae/blob/main/PRETRAIN.md
 
+@gin.configurable()
 class MaskedAutoencoderViT(nn.Module):
     """ Masked Autoencoder with VisionTransformer backbone    
     """

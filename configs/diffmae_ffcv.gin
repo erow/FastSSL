@@ -33,7 +33,7 @@ tiny/diffmae_tiny.decoder_depth = 4
 tiny/diffmae_tiny.decoder_num_heads = 3
 tiny/diffmae_tiny.mask_ratio = 0.75
 tiny/diffmae_tiny.num_diffusion_timesteps = 1000
-tiny/diffmae_tiny.diffusion_schedule = "cosine"
+tiny/diffmae_tiny.diffusion_schedule = "linear"
 
 # Small model - 22M parameters
 small/diffmae_small.img_size = 224
@@ -46,7 +46,7 @@ small/diffmae_small.decoder_depth = 4
 small/diffmae_small.decoder_num_heads = 6
 small/diffmae_small.mask_ratio = 0.75
 small/diffmae_small.num_diffusion_timesteps = 1000
-small/diffmae_small.diffusion_schedule = "cosine"
+small/diffmae_small.diffusion_schedule = "linear"
 
 # Base model - 86M parameters (recommended)
 base/diffmae_base.img_size = 224
@@ -59,7 +59,7 @@ base/diffmae_base.decoder_depth = 8
 base/diffmae_base.decoder_num_heads = 12
 base/diffmae_base.mask_ratio = 0.75
 base/diffmae_base.num_diffusion_timesteps = 1000
-base/diffmae_base.diffusion_schedule = "cosine"
+base/diffmae_base.diffusion_schedule = "linear"
 
 # Large model - 304M parameters
 large/diffmae_large.img_size = 224
@@ -72,7 +72,7 @@ large/diffmae_large.decoder_depth = 8
 large/diffmae_large.decoder_num_heads = 16
 large/diffmae_large.mask_ratio = 0.75
 large/diffmae_large.num_diffusion_timesteps = 1000
-large/diffmae_large.diffusion_schedule = "cosine"
+large/diffmae_large.diffusion_schedule = "linear"
 
 # Huge model - 632M parameters
 huge/diffmae_huge.img_size = 224
@@ -85,7 +85,7 @@ huge/diffmae_huge.decoder_depth = 8
 huge/diffmae_huge.decoder_num_heads = 16
 huge/diffmae_huge.mask_ratio = 0.75
 huge/diffmae_huge.num_diffusion_timesteps = 1000
-huge/diffmae_huge.diffusion_schedule = "cosine"
+huge/diffmae_huge.diffusion_schedule = "linear"
 
 # Parameters for SimplePipeline:
 # ==============================================================================

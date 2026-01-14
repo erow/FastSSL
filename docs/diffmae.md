@@ -117,7 +117,7 @@ torchrun --nproc_per_node=8 main_pretrain.py \
 
 | Hyperparameter | Value | Description |
 |----------------|-------|-------------|
-| Epochs | 1600 | Total training epochs (DiffMAE benefits from longer training) |
+| Epochs | 400 | Total training epochs (DiffMAE benefits from longer training) |
 | Warmup Epochs | 40 | Learning rate warmup period |
 | Base LR | 1.5e-4 | Base learning rate (scaled by batch size) |
 | Weight Decay | 0.05 | AdamW weight decay |
@@ -126,7 +126,7 @@ torchrun --nproc_per_node=8 main_pretrain.py \
 | Batch Size | 256 (Base) | Per-GPU batch size |
 | Mask Ratio | 0.75 | Proportion of patches to mask |
 | Diffusion Steps | 1000 | Number of diffusion timesteps |
-| Noise Schedule | cosine | Type of noise schedule (cosine/linear/quadratic) |
+| Noise Schedule | linear (rho=0.8) | Type of noise schedule (cosine/linear/quadratic) |
 
 #### Adjusting for Different Datasets
 
@@ -229,13 +229,8 @@ Key metrics to monitor:
 2. **Learning Rate**: Should follow cosine schedule with warmup
 3. **GPU Memory**: Monitor to adjust batch size if needed
 
-Example W&B logging:
-```bash
-# Add W&B logging
---wandb_project your_project \
---wandb_entity your_entity \
---experiment_name diffmae_base_1600ep
-```
+By default, the training is logged to W&B.
+
 
 ## Comparison with MAE
 

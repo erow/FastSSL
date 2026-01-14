@@ -2,10 +2,6 @@
 # ==============================================================================
 build_dataset.transform_fn = @SimplePipeline
 
-# Parameters for build_model:
-# ==============================================================================
-build_model.model_fn = @base/MaskedAutoencoderViT
-
 # Parameters for MaskedAutoencoderViT:
 # ==============================================================================
 
@@ -58,3 +54,7 @@ huge/MaskedAutoencoderViT.decoder_num_heads=16
 # ==============================================================================
 SimplePipeline.img_size = 224
 SimplePipeline.scale = (0.2, 1.0)
+
+# Parameters for build_model:
+# ==============================================================================
+build_model.model_fn = @base/MaskedAutoencoderViT

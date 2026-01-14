@@ -1,76 +1,47 @@
 from typing import List
 import gin
 
-
-DEFAULT_SCHEME ={
-    1: [
-        dict(res=160,mask_ratio=0.5,),
-        dict(res=192,mask_ratio=0.66),
-        dict(res=224,mask_ratio=0.75),
-    ],
-    2: [
-        dict(res=160,mask_ratio=0.75,),
-        dict(res=192,mask_ratio=0.75),
-        dict(res=224,mask_ratio=0.75),
-    ],
-    3: [
-        dict(res=224,mask_ratio=0.75),
-        dict(res=192,mask_ratio=0.75),
-        dict(res=160,mask_ratio=0.75),
-    ],
-    4: [
-        dict(res=160,mask_ratio=0.75,),
-        dict(res=192,mask_ratio=0.80),
-        dict(res=224,mask_ratio=0.85),
-    ],
-    5: [
-        dict(res=224,mask_ratio=0.75),
-        dict(res=192,mask_ratio=0.75),
-        dict(res=224,mask_ratio=0.75),
-    ],
-    6: [
-        dict(res=224,mask_ratio=0.75),
-        dict(res=192,mask_ratio=0.75),
-        dict(res=224,mask_ratio=0.85),
-    ],
-}
-
-@gin.configurable
-class DynamicMasking:
-    def __init__(self, start_ramp=gin.REQUIRED, end_ramp=gin.REQUIRED,  
-                    scheme = 2):
-        if isinstance(scheme, int):
-            scheme = DEFAULT_SCHEME[scheme]
-        else:
-            assert isinstance(scheme, list)            
+@gin.configurable()
+class DynamicResolution:
+    def __init__(self, scheme=gin.REQUIRED):
         self.scheme = scheme
-        self.start_ramp = start_ramp
-        self.end_ramp = end_ramp
     
     def get_config(self, epoch):
-        if epoch <= self.start_ramp:
-            return self.scheme[0]
-        elif epoch>=self.end_ramp:
-            return self.scheme[-1]
-        else:
-            i = (epoch-self.start_ramp) * (len(self.scheme)-1) // (self.end_ramp-self.start_ramp)
-            return self.scheme[i]
+        for config in self.scheme:
+            if epoch == config['epoch']:
+                return config
+        return None
     
     def __call__(self, model, loader, epoch,is_ffcv=False):        
         config = self.get_config(epoch)
-        print(", ".join([f"{k}={v}" for k,v in config.items()]))
+        if config is None:
+            # use the last config
+            return
+        print("Dynamic resolution: ", ", ".join([f"{k}={v}" for k,v in config.items()]))
         img_size = config['res']
-        mask_ratio = config['mask_ratio']
         
-        assert hasattr(model,"mask_ratio")
-        model.mask_ratio = mask_ratio
         if is_ffcv:
-            pipeline=loader.pipeline_specs['image']
+            if not hasattr(loader, 'pipeline_specs'):
+                raise AttributeError("FFCV loader does not have 'pipeline_specs' attribute")
+            if 'image' not in loader.pipeline_specs:
+                raise KeyError("FFCV loader does not have 'image' in pipeline_specs")
+            pipeline = loader.pipeline_specs['image']
+            if not hasattr(pipeline, 'decoder') or not hasattr(pipeline.decoder, 'output_size'):
+                raise AttributeError("FFCV pipeline decoder does not have 'output_size' attribute")
             if pipeline.decoder.output_size[0] != img_size:
-                pipeline.decoder.output_size = (img_size,img_size)
-                loader.generate_code()
+                pipeline.decoder.output_size = (img_size, img_size)
+                if hasattr(loader, 'generate_code'):
+                    loader.generate_code()
+                else:
+                    raise AttributeError("FFCV loader does not have 'generate_code' method")
         else:
-            print(loader.dataset.transforms)
-            augmentation = loader.dataset.transforms.transform
-            augmentation.change_resolution(img_size)
+            if not hasattr(loader, 'dataset'):
+                raise AttributeError("DataLoader does not have 'dataset' attribute")
+            if not hasattr(loader.dataset, 'transforms'):
+                raise AttributeError(f"Dataset {type(loader.dataset).__name__} does not have 'transforms' attribute")
+            transforms = loader.dataset.transforms
+            if not hasattr(transforms, 'transform'):
+                raise AttributeError("Dataset transforms does not have 'transform' attribute")
+            augmentation = transforms.transform
+            augmentation.size = (img_size,img_size)
                 
